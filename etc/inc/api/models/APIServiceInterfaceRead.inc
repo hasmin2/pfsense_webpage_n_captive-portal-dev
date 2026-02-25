@@ -29,7 +29,6 @@ class APIServiceInterfaceRead extends APIModel {
     private function __get_metrics() {
         $if_descrs = get_configured_interface_with_descr(true);
         $if_info = [];
-
         foreach ($if_descrs as $if_descr => $if_name) {
             $if = ["name" => $if_descr, "descr" => $if_name];
             $if = $if + get_interface_info($if_descr);

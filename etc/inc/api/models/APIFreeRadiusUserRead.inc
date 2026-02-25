@@ -24,8 +24,11 @@ class APIFreeRADIUSUserRead extends APIModel {
     public function action() {
         if(isset($this->initial_data["freeradius_username"])){
             foreach($this->config["installedpackages"]["freeradius"]["config"] as $eachuser){
-                if($eachuser['varusersusername']===$this->initial_data['freeradius_username']){
-                    return $eachuser;
+                if (($eachuser['varusersusername'] ?? '') === ($this->initial_data['freeradius_username'] ?? '')) {
+                    $tmp = [];
+                    $tmp[]= $eachuser;
+                    $tmp = array_values($tmp);   // 혹시 모를 키 꼬임 방지
+                    return APIResponse\get(0,  (object)$tmp ); // data: [ {..} ]
                 }
             }
         }

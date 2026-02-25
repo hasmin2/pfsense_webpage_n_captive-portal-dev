@@ -35,8 +35,17 @@ class APIFreeRADIUSUserDelete extends APIModel {
             # Loop through each configured user and check if this user exists
             foreach ($this->config["installedpackages"]["freeradius"]["config"] as $item=>$userentry) {
 				if ($this->initial_data["freeradius_username"] === $userentry['varusersusername']) {
+                    $user=$userentry['varusersusername'];
 					$this->validated_data["freeradius_username"] = $userentry['varusersusername'];
 				    unset($this->config["installedpackages"]["freeradius"]["config"][$item]);  // flag for remove DB for when anyone who is in site is open webpage.
+                    unlink_if_exists("/var/log/radacct/datacounter/daily/used-octets-$user*");
+                    unlink_if_exists("/var/log/radacct/datacounter/daily/max-octets-$user");
+                    unlink_if_exists("/var/log/radacct/datacounter/weekiy/used-octets-$user*");
+                    unlink_if_exists("/var/log/radacct/datacounter/weekiy/max-octets-$user");
+                    unlink_if_exists("/var/log/radacct/datacounter/monthly/used-octets-$user*");
+                    unlink_if_exists("/var/log/radacct/datacounter/monthly/max-octets-$user");
+                    unlink_if_exists("/var/log/radacct/datacounter/forever/used-octets-$user*");
+                    unlink_if_exists("/var/log/radacct/datacounter/forever/max-octets-$user");
                     //$this->config["installedpackages"]["freeradius"]["config"][$item]["varusersmodified"]="delete";  // flag for remove DB for when anyone who is in site is open webpage.
 				}
             }

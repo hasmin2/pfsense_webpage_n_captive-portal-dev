@@ -226,7 +226,7 @@ function draw_wifi_contents() {
 
 
 
-function set_descruption($userid, $description){
+function set_description($userid, $description){
     global $config;
     foreach ($config["installedpackages"]["freeradius"]["config"] as $item=>$userentry) {
         if(($userid === $userentry['varusersusername'])){
@@ -394,94 +394,138 @@ function reset_wifi_user_pw($userlist){
 }
 function create_wifi_user($dataamount, $vouchernumber, $israndompw, $terminaltype, $timeperiod){
     global $config;
-    $userprefix=strtolower($terminaltype).'user';
+
+    $created_users = array(); // 생성된 userinfoentry 목록 반환용
+
+    // freeradius config 배열 보장
+    if (!isset($config['installedpackages']['freeradius']['config']) || !is_array($config['installedpackages']['freeradius']['config'])) {
+        $config['installedpackages']['freeradius']['config'] = array();
+    }
+
+    $userprefix = strtolower($terminaltype) . 'user';
     $userpostfix = 0;
-    foreach($config['installedpackages']['freeradius']['config'] as $item){
-        if(strpos($item['varusersusername'], $userprefix) !== false){
-            $curpostfix = intval(substr($item['varusersusername'], -strlen($item['varusersusername'])+strlen($userprefix)));
-            if($curpostfix > $userpostfix){ $userpostfix = $curpostfix; }
+
+    foreach ($config['installedpackages']['freeradius']['config'] as $item) {
+        if (!isset($item['varusersusername'])) {
+            continue;
+        }
+
+        // prefix로 시작하는 계정만 대상으로
+        if (strpos($item['varusersusername'], $userprefix) === 0) {
+            $curpostfix = intval(substr($item['varusersusername'], strlen($userprefix)));
+            if ($curpostfix > $userpostfix) {
+                $userpostfix = $curpostfix;
+            }
         }
     }
+
     $userpostfix++;
-    for ($usercount=$userpostfix;$usercount<$userpostfix+$vouchernumber;$usercount++){
-        if($vouchernumber>100){ break; }
-        $username = $userprefix.str_pad($usercount, 5, '0', STR_PAD_LEFT);
+
+    // 최대 100개 제한
+    $vouchernumber = intval($vouchernumber);
+    if ($vouchernumber > 100) {
+        $vouchernumber = 100;
+    }
+    if ($vouchernumber < 1) {
+        return array();
+    }
+
+    for ($usercount = $userpostfix; $usercount < $userpostfix + $vouchernumber; $usercount++) {
+        $username = $userprefix . str_pad($usercount, 5, '0', STR_PAD_LEFT);
+
         $userexist = false;
-        foreach($config['installedpackages']['freeradius']['config'] as $item){
-            if($username === $item['varusersusername']){ $userexist = true; break; }
+        foreach ($config['installedpackages']['freeradius']['config'] as $item) {
+            if (isset($item['varusersusername']) && $username === $item['varusersusername']) {
+                $userexist = true;
+                break;
+            }
         }
-        if($userexist) { continue; }
-        $curdate = date('Y/m/d H:i:s');;
-        $halftimeperiod=explode('-',$timeperiod);
-        if(count($halftimeperiod)==2) {
-            $varusershalftimeperiod=$halftimeperiod[0];
-            $varuserstimeperiod=$halftimeperiod[1];
+        if ($userexist) {
+            continue;
         }
-        else{
-            $varusershalftimeperiod="";
-            $varuserstimeperiod=$halftimeperiod[0];
+
+        $curdate = date('Y/m/d H:i:s');
+        $halftimeperiod = explode('-', $timeperiod);
+
+        if (count($halftimeperiod) == 2) {
+            $varusershalftimeperiod = $halftimeperiod[0];
+            $varuserstimeperiod = $halftimeperiod[1];
+        } else {
+            $varusershalftimeperiod = "";
+            $varuserstimeperiod = $halftimeperiod[0];
         }
 
         $userinfoentry = array(
-            "sortable"=>"",
-            "varuserspasswordencryption"=>"Cleartext-Password",
-            "varusersmotpenable"=>"",
-            "varusersauthmethod"=>"motp",
-            "varusersmotpinitsecret"=>"",
-            "varusersmotppin"=>"",
-            "varusersmotpoffset"=>"",
-            "qrcodetext"=>"",
-            "varuserswisprredirectionurl"=>"",
-            "varuserssimultaneousconnect"=>"",
-            "description"=>"",
-            "varusersframedipaddress"=>"",
-            "varusersframedipnetmask"=>"",
-            "varusersframedroute"=>"",
-            "varusersframedip6address"=>"",
-            "varusersframedip6route"=>"",
-            "varusersvlanid"=>"",
-            "varusersexpiration"=>"",
-            "varuserssessiontimeout"=>"",
-            "varusershalftimeperiod"=>$varusershalftimeperiod,
-            "varuserslogintime"=>"",
-            "varusersamountoftime"=>"",
-            "varuserspointoftime"=>$varuserstimeperiod,
-            "varusersmaxtotaloctetstimerange"=> strtolower($varuserstimeperiod),
-            "varusersmaxbandwidthdown"=>"",
-            "varusersmaxbandwidthup"=>"",
-            "varusersacctinteriminterval"=>"600",
-            "varuserstopadditionaloptions"=>"",
-            "varuserscheckitemsadditionaloptions"=>"",
-            "varusersreplyitemsadditionaloptions"=>"",
-            "varusersterminaltype"=>$terminaltype,
-            "varusersresetquota"=>"true",
-            "varusersmodified"=>"create",
-            "varuserscreatedate"=>$curdate,
+            "sortable" => "",
+            "varuserspasswordencryption" => "Cleartext-Password",
+            "varusersmotpenable" => "",
+            "varusersauthmethod" => "motp",
+            "varusersmotpinitsecret" => "",
+            "varusersmotppin" => "",
+            "varusersmotpoffset" => "",
+            "qrcodetext" => "",
+            "varuserswisprredirectionurl" => "",
+            "varuserssimultaneousconnect" => "",
+            "description" => "",
+            "varusersframedipaddress" => "",
+            "varusersframedipnetmask" => "",
+            "varusersframedroute" => "",
+            "varusersframedip6address" => "",
+            "varusersframedip6route" => "",
+            "varusersvlanid" => "",
+            "varusersexpiration" => "",
+            "varuserssessiontimeout" => "",
+            "varusershalftimeperiod" => $varusershalftimeperiod,
+            "varuserslogintime" => "",
+            "varusersamountoftime" => "",
+            "varuserspointoftime" => $varuserstimeperiod,
+            "varusersmaxtotaloctetstimerange" => strtolower($varuserstimeperiod),
+            "varusersmaxbandwidthdown" => "",
+            "varusersmaxbandwidthup" => "",
+            "varusersacctinteriminterval" => "600",
+            "varuserstopadditionaloptions" => "",
+            "varuserscheckitemsadditionaloptions" => "",
+            "varusersreplyitemsadditionaloptions" => "",
+            "varusersterminaltype" => $terminaltype,
+            "varusersresetquota" => "true",
+            "varusersmodified" => "create",
+            "varuserscreatedate" => $curdate,
         );
-        $userinfoentry['varusersusername']=$username;
-        if($israndompw==="randpwd"){
+
+        $userinfoentry['varusersusername'] = $username;
+
+        if ($israndompw === "randpwd") {
             $alphabet = '1234567890';
-            $pass = array(); //remember to declare $pass as an array
-            $alphaLength = strlen($alphabet) - 1; //put the length -1 in cache
+            $pass = array();
+            $alphaLength = strlen($alphabet) - 1;
+
             for ($passwordchar = 0; $passwordchar < 6; $passwordchar++) {
                 $n = rand(0, $alphaLength);
                 $pass[] = $alphabet[$n];
             }
-            $userinfoentry['varuserspassword']= implode($pass);
-        }
-        else{ $userinfoentry['varuserspassword']="1111"; }
 
-        if(is_numeric($dataamount)){ $userinfoentry['varusersmaxtotaloctets']=$dataamount; }
-        else{ $userinfoentry['varusersmaxtotaloctets']=0; }
-
-        if(!isset($config['installedpackages']['freeradius']['config'])){
-            $config["installedpackages"]["freeradius"]=["config"=>[""]];
-            array_push($config["installedpackages"]["freeradius"]["config"][0], $userinfoentry);
+            $userinfoentry['varuserspassword'] = implode($pass);
+        } else {
+            $userinfoentry['varuserspassword'] = "1111";
         }
-        else{ array_push($config["installedpackages"]["freeradius"]["config"], $userinfoentry); }
+
+        if (is_numeric($dataamount)) {
+            $userinfoentry['varusersmaxtotaloctets'] = $dataamount;
+        } else {
+            $userinfoentry['varusersmaxtotaloctets'] = 0;
+        }
+
+        // config에 추가
+        $config['installedpackages']['freeradius']['config'][] = $userinfoentry;
+
+        // 반환 리스트에도 추가
+        $created_users[] = $userinfoentry;
     }
+
     freeradius_users_resync();
     write_config("Created Wifi user");
+
+    return $created_users; // 생성된 userinfoentry 목록 반환
 }
 
 ?>

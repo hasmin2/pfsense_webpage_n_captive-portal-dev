@@ -1693,7 +1693,7 @@ function captiveportal_authenticate_user(&$login = '', &$password = '', $clientm
     //////////////////////////////////////////////////////////////////////////////////////////////////
     // 나는 여기서 어스 서버에 정식으로 등록하기 전에 추가적인 제약사항을 이부분에서 검사하고 승인을 취소하는 것을 진행
     /////1번은 사용자 확인 안됨 (중간에 지우거나 등등)
-    if(!isset($userindex)){
+    /*if(!isset($userindex)){
         return array('result'=> false, 'attributes'=>$reply_attributes, 'auth_method' =>$auth_method, 'login_status'=> $login_status, 'login_message' => "User doesn't exist.");
     } else { //사용자 확인됨. 넘어감 //사용량이 초과한건지 확인함
         //먼저 사용자 업데이트 상황이 있는지 확인
@@ -1708,6 +1708,68 @@ function captiveportal_authenticate_user(&$login = '', &$password = '', $clientm
             write_config("freeradius user update");
             //다음으로 수정사항이 있으면 유저 리싱크 함.
             freeradius_users_resync(false,"user change applied");//-> Freeradius 에다가 리싱크 명령함.
+        }
+    }*/
+    if (!isset($userindex)) {
+        return array(
+            'result'        => false,
+            'attributes'    => $reply_attributes,
+            'auth_method'   => $auth_method,
+            'login_status'  => $login_status,
+            'login_message' => "User doesn't exist."
+        );
+    } else {
+        // 사용자 확인됨. 넘어감
+        $uconf =& $config['installedpackages']['freeradius']['config'][$userindex];
+
+        // 사용자 업데이트 상황이 있는지 확인
+        if (!empty($uconf['varusersmodified']) && isset($login) && $login !== '') {
+
+            // resetquota가 있으면 사용량 파일 삭제 (메인 + 세션파일)
+            if (!empty($uconf['varusersresetquota'])) {
+                unset($uconf['varusersresetquota']);
+
+                $timerange = strtolower($uconf['varuserspointoftime'] ?? '');
+
+                // timerange 화이트리스트 (예: daily/weekly/monthly)
+                $allowed_ranges = array('daily', 'weekly', 'monthly');
+                if (in_array($timerange, $allowed_ranges, true)) {
+
+                    // login 안전성 체크 (계정명 규칙에 맞게 조정 가능)
+                    // 예: 영문/숫자/_-. 만 허용
+                    if (preg_match('/^[A-Za-z0-9_.-]+$/', $login)) {
+                        $dir  = "/var/log/radacct/datacounter/{$timerange}";
+                        $base = "{$dir}/used-octets-{$login}";
+
+                        // 1) 메인 파일 삭제
+                        unlink_if_exists($base);
+
+                        // 2) 세션 파일 삭제 (used-octets-username-*)
+                        $session_files = glob($base . '-*');
+                        if (is_array($session_files)) {
+                            foreach ($session_files as $f) {
+                                if (is_file($f)) {
+                                    @unlink($f);
+                                }
+                            }
+                        }
+                    } else {
+                        // 필요 시 로깅
+                        // log_error("Invalid login format for resetquota: " . $login);
+                    }
+                } else {
+                    // 필요 시 로깅
+                    // log_error("Invalid timerange for resetquota: " . $timerange);
+                }
+            }
+
+            // 마지막에 modified 플래그 해제 (처리 완료 후)
+            unset($uconf['varusersmodified']);
+
+            write_config("freeradius user update");
+
+            // 수정사항 적용
+            freeradius_users_resync(false, "user change applied");
         }
     }
     //////////////////////////////////////////////////////////////////////////////////////////////////    //////////////////////////////////////////////////////////////////////////////////////////////////    //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1869,7 +1931,7 @@ function captiveportal_authenticate_user(&$login = '', &$password = '', $clientm
                         //$msg = print_r($attributes);
                     }
                     else {
-                        $msg="User is suspended";
+                        $msg.="User is suspended : ".$status;
                     }
                 } elseif ($result === null) {
                     $val = 0;
@@ -3656,51 +3718,106 @@ function captiveportal_fxuser_disconnect(){
     }
 }
 
-function getcurquota($sessionid, $clientip){
-    global $config;
-    $username=getusername($sessionid);
-    if ($username != "") {
-        foreach($config['installedpackages']['freeradius']['config'] as $item => $value){
-            if($value['varusersusername']==$username){
-                $userindex = $item;
-                $timerange = $value['varusersmaxtotaloctetstimerange'];
-            }
-        }
-        $filepathall = "/var/log/radacct/datacounter/$timerange/used-octets-$username";
-        $usagenum = 0;
-        $files = glob($filepathall);
-        foreach($files as $filepath){
-            if(file_exists($filepath) && ($use_file = fopen($filepath, "r"))!==false ){
-                $usagenum = $usagenum + intval(fgets($use_file));
-                fclose($use_file);
-            }
-            else {
-                $usagenum += 0;
-            }
-        }
-        $basedata = number_format(abs($usagenum)/1048576, 2, '.',',');
-        $rcv = number_format(abs(getVolume($clientip)['input_bytes'])/1048576, 2, '.',',');
-        $sent = number_format(abs(getVolume($clientip)['output_bytes'])/1048576, 2, '.',',');
-    }
-    return str_replace(",", "", $basedata) + str_replace(",", "", $rcv) + str_replace(",", "", $sent);
-}
-function check_quota($username, $timerange){
+function getcurquota($sessionid) {
     global $config;
 
-    $filepathall = "/var/log/radacct/datacounter/$timerange/used-octets-$username";
-    $usagenum = 0;
-    $files = glob($filepathall);
-    foreach($files as $filepath){
-        if(file_exists($filepath) && ($use_file = fopen($filepath, "r"))!==false ){
-            $usagenum = $usagenum + intval(fgets($use_file));
-            fclose($use_file);
-        }
-        else {
-            $usagenum += 0;
+    $username = getusername($sessionid);
+    if ($username === "" || $username === null) {
+        return "0.00";
+    }
+
+    // sanitize (auth 셸과 유사)
+    $safeUser = preg_replace('/[^0-9a-zA-Z._:-]/', 'X', (string)$username);
+
+    // timerange 찾기
+    $timerange = '';
+    if (!empty($config['installedpackages']['freeradius']['config']) && is_array($config['installedpackages']['freeradius']['config'])) {
+        foreach ($config['installedpackages']['freeradius']['config'] as $item => $value) {
+            if (($value['varusersusername'] ?? '') === $username) {
+                $timerange = (string)($value['varusersmaxtotaloctetstimerange'] ?? '');
+                break; // 첫 매칭에서 종료
+            }
         }
     }
-    $basedata = number_format(abs($usagenum)/1048576, 2, '.',',');
-    return str_replace(",", "", $basedata);
+
+    $safeRange = preg_replace('/[^a-z]/', '', strtolower($timerange));
+    if ($safeRange === '') {
+        return "0.00";
+    }
+
+    $dir = "/var/log/radacct/datacounter/{$safeRange}";
+    $baseFile = "{$dir}/used-octets-{$safeUser}";
+    $sessionPattern = "{$dir}/used-octets-{$safeUser}-*";
+
+    $usagenum = 0;
+
+    // 1) BASE exact file
+    if (is_file($baseFile) && is_readable($baseFile)) {
+        $line = trim((string)@file_get_contents($baseFile));
+        if (preg_match('/^\d+$/', $line)) {
+            $usagenum += (int)$line;
+        }
+    }
+
+    // 2) SESSION files exact-prefix only
+    $files = glob($sessionPattern, GLOB_NOSORT);
+    if (is_array($files)) {
+        foreach ($files as $filepath) {
+            if (!is_file($filepath) || !is_readable($filepath)) {
+                continue;
+            }
+            $line = trim((string)@file_get_contents($filepath));
+            if (preg_match('/^(\d+)/', $line, $m)) {
+                $usagenum += (int)$m[1];
+            }
+        }
+    }
+
+    // ⚠️ getVolume($clientip)는 여기서 더하지 않음 (중복 가능성 높음)
+    // 필요하면 UI 참고값으로 별도 함수/별도 라벨로 표시
+
+    return number_format($usagenum / 1048576, 2, '.', '');
+}
+
+function check_quota($username, $timerange)
+{
+    // auth 셸과 비슷하게 sanitize
+    $safeUser = preg_replace('/[^0-9a-zA-Z._:-]/', 'X', (string)$username);
+    $safeRange = preg_replace('/[^a-z]/', '', strtolower((string)$timerange));
+
+    $dir = "/var/log/radacct/datacounter/{$safeRange}";
+    $baseFile = "{$dir}/used-octets-{$safeUser}";
+    $sessionPattern = "{$dir}/used-octets-{$safeUser}-*"; // prefix 충돌 방지 (user1 vs user10)
+
+    $usagenum = 0;
+
+    // 1) BASE exact file
+    if (is_file($baseFile) && is_readable($baseFile)) {
+        $line = trim((string)@file_get_contents($baseFile));
+        if (preg_match('/^\d+$/', $line)) {
+            $usagenum += (int)$line;
+        }
+    }
+
+    // 2) SESSION files exact-prefix only
+    $files = glob($sessionPattern, GLOB_NOSORT);
+    if (is_array($files)) {
+        foreach ($files as $filepath) {
+            if (!is_file($filepath) || !is_readable($filepath)) {
+                continue;
+            }
+
+            $line = trim((string)@file_get_contents($filepath));
+
+            // awk SUM += $1 와 비슷하게 첫 숫자만 사용
+            if (preg_match('/^(\d+)/', $line, $m)) {
+                $usagenum += (int)$m[1];
+            }
+        }
+    }
+
+    // MB, 소수점 2자리 (문자열 반환)
+    return number_format($usagenum / 1048576, 2, '.', '');
 }
 
 function getmaxquota($sessionid){

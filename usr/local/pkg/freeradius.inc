@@ -3715,7 +3715,7 @@ fi
 
 ### The next two lines are just for getting values for logging output
 MAXOCTETSUSERNAMEMB=$((`/bin/cat "/var/log/radacct/datacounter/\$TIMERANGE/max-octets-\$USERNAME"`/1024/1024))
-USEDOCTETSUSERNAMEMB=`/bin/cat "/var/log/radacct/datacounter/\$TIMERANGE/used-octets-\${USERNAME}"* | /usr/bin/awk '{ SUM += \$1; } END { print int(SUM/1024/1024); }'`
+USEDOCTETSUSERNAMEMB=`/bin/cat "/var/log/radacct/datacounter/\$TIMERANGE/used-octets-\${USERNAME}"-* | /usr/bin/awk '{ SUM += \$1; } END { print int(SUM/1024/1024); }'`
 
 ### We check if MAX-OCTETS-USERNAME is greater than USED-OCTETS-USERNAME and accept or reject the user
 if [ \$MAXOCTETSUSERNAMEMB -gt \$USEDOCTETSUSERNAMEMB ]; then

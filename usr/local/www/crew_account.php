@@ -54,7 +54,7 @@ if ($_POST['schedule_json'] && $_POST['userid']) {
 if ($_POST['description'] && $_POST['userid']) {
     $description=$_POST['description'];
     $userid=$_POST['userid'];
-    set_descruption($userid, $description);
+    set_description($userid, $description);
     echo '<script> location.replace("crew_account_processing.php");</script>';
 }
 //print_r($_POST);

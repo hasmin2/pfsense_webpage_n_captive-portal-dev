@@ -15,9 +15,12 @@
 
 require_once("api/framework/APIModel.inc");
 require_once("api/framework/APIResponse.inc");
+require_once("manage_crew_wifi_account.inc");
+
+
 class APIFreeRADIUSUserCreate extends APIModel {
     # Create our method constructor
-
+    private $bulk_create_mode = false;
     public function __construct() {
         parent::__construct();
         $this->privileges = ["page-all", "page-services-freeradius"];
@@ -25,8 +28,9 @@ class APIFreeRADIUSUserCreate extends APIModel {
     }
 
     public function action() {
-        # Write the user to configuration and set the user on the backend. Return response with created user object.
-        $this->write_config();
+        if (!$this->bulk_create_mode) {
+            $this->write_config();
+        }
         return APIResponse\get(0, $this->validated_data);
     }
 
@@ -43,6 +47,37 @@ class APIFreeRADIUSUserCreate extends APIModel {
 				else { $this->id = $item+1; }
 			}
 		}
+        else if (isset($this->initial_data['userquantity'])) {
+            if (
+                isset($this->initial_data['freeradius_maxtotaloctetstimerange']) &&
+                isset($this->initial_data['freeradius_maxtotaloctets']) &&
+                isset($this->initial_data['freeradius_terminaltype']) &&
+                isset($this->initial_data['israndompw'])
+            ) {
+                $returnarray = create_wifi_user(
+                    $this->initial_data['freeradius_maxtotaloctets'],
+                    $this->initial_data['userquantity'],
+                    $this->initial_data['israndompw'],
+                    $this->initial_data['freeradius_terminaltype'],
+                    $this->initial_data['freeradius_maxtotaloctetstimerange']
+                );
+
+                // ✅ 최종 action()이 반환할 데이터에 넣기
+                $this->bulk_create_mode = true;
+                $this->validated_data['created_count'] = count($returnarray);
+                $this->validated_data['users'] = $returnarray;
+
+                // priv가 응답 schema에 항상 필요하면 초기화
+                if (!isset($this->validated_data['priv'])) {
+                    $this->validated_data['priv'] = [];
+                }
+
+                return;
+            } else {
+                $this->errors[] = APIResponse\get(5000, "More args needed, freeradius_maxtotaloctetstimerange, freeradius_maxtotaloctets, userquantity, israndompw, freeradius_terminaltype");
+                return;
+            }
+        }
 		else { $this->errors[] = APIResponse\get(5000); }
 		if (!preg_match("/[^a-zA-Z0-9\.\-_]/", $this->initial_data['freeradius_username'])) {
 		# Ensure username is not reserved by the system
@@ -55,7 +90,6 @@ class APIFreeRADIUSUserCreate extends APIModel {
                             $this->config["installedpackages"]["freeradius"]=["config"=>[$this->id]];
                         }
                         $this->config["installedpackages"]["freeradius"]["config"][$this->id]=$this->create_userinfo();
-
                         $this->write_config();
 
 					} else {
@@ -76,8 +110,7 @@ class APIFreeRADIUSUserCreate extends APIModel {
         $this->validated_data["priv"] = [];
 
         # Check for our optional `priv` payload value
-        if ($this->initial_data["priv"]) {
-            # Ensure value is an array
+        if (isset($this->initial_data["priv"]) && $this->initial_data["priv"]) {            # Ensure value is an array
             if (!is_array($this->initial_data["priv"])) {
                 $this->initial_data["priv"] = array($this->initial_data["priv"]);
             }
@@ -167,13 +200,24 @@ class APIFreeRADIUSUserCreate extends APIModel {
 				$result[$item] = $value;
 			}
 		}
-        if(isset($this->initial_data["freeradius_maxtotaloctetstimerange"])) {
-            $timerange = strtolower($this->initial_data["freeradius_maxtotaloctetstimerange"]);
-            $username = $this->initial_data["freeradius_username"];
-            $filepathall = "/var/log/radacct/datacounter/$timerange/used-octets-$username";
-            if (($use_file = fopen($filepathall, "w")) !== false) {
-                fwrite($use_file, $this->initial_data["freeradius_lastbasedata"]);
-                fclose($use_file);
+        if (isset($this->initial_data["freeradius_maxtotaloctetstimerange"])) {
+            $timerange = strtolower((string)$this->initial_data["freeradius_maxtotaloctetstimerange"]);
+            $username  = (string)($this->initial_data["freeradius_username"] ?? '');
+
+            if ($username !== '') {
+                $base = "/var/log/radacct/datacounter/{$timerange}";
+                $prefix = $base . "/used-octets-" . $username;
+
+                // 기본 파일 삭제
+                unlink_if_exists($prefix);
+                $files = glob($prefix . '-*');
+                if ($files !== false) {
+                    foreach ($files as $f) {
+                        if (is_file($f)) {
+                            unlink_if_exists($f);
+                        }
+                    }
+                }
             }
         }
         $result['varuserscreatedate'] = date('Y/m/d H:i:s');
