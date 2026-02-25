@@ -204,7 +204,9 @@ function draw_wifi_contents() {
         if($r['Reset']){
             $usageSubText = 'Init';
         }
-
+        if((float)$r['Used(MB)'] > (float)$r['Quota(MB)']){
+            $usageSubText = 'Depleted';
+        }
         $usageText = $usageSubText . ' / ' . number_format((float)$r['Quota(MB)'], 0, '.', ',') . 'MB';
         $rtnstr .= '<td data-th="Usage state" data-th-width="100" data-width="100">'.htmlspecialchars($usageText, ENT_QUOTES, 'UTF-8').'</td>';
 
