@@ -198,15 +198,35 @@ function draw_wifi_contents() {
 
 
         $usageSubText = number_format((float)$r['Used(MB)'], 2, '.', ',');
-        if($r['Modified']){
-            $usageSubText = 'Update';
-        }
-        if($r['Reset']){
+        if (!empty($r['Reset'])) {
             $usageSubText = 'Init';
-        }
-        if((float)$r['Used(MB)'] > (float)$r['Quota(MB)']){
+        } elseif (!empty($r['Modified'])) {
+            $usageSubText = 'Update';
+        } elseif ((float)$r['Used(MB)'] > (float)$r['Quota(MB)']) {
             $usageSubText = 'Depleted';
         }
+        /*$status = (string)$usageSubText;
+
+        switch ($status) {
+            case 'Depleted':
+                $colorClass = 'st-depleted';
+                break;
+            case 'Update':
+                $colorClass = 'st-update';
+                break;
+            case 'Init':
+                $colorClass = 'st-init';
+                break;
+            default:
+                $colorClass = 'st-default';
+                break;
+        }
+
+        $usageText =
+            '<span class="'.$colorClass.'">' . htmlspecialchars($status, ENT_QUOTES, 'UTF-8') . '</span>'
+            . ' / ' . number_format((float)$r['Quota(MB)'], 0, '.', ',') . 'MB';*/
+
+
         $usageText = $usageSubText . ' / ' . number_format((float)$r['Quota(MB)'], 0, '.', ',') . 'MB';
         $rtnstr .= '<td data-th="Usage state" data-th-width="100" data-width="100">'.htmlspecialchars($usageText, ENT_QUOTES, 'UTF-8').'</td>';
 
