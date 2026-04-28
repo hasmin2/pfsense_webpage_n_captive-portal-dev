@@ -477,339 +477,1309 @@ EOD;
 	}
 }
 
-function freeradius_users_resync($via_rpc = false) {
-	global $config;
-	$conf = '';
 
-	if (is_array($config['installedpackages']['freeradius']['config'])) {
-		$arrusers = $config['installedpackages']['freeradius']['config'];
-	} else {
-		$arrusers = array();
+if (!function_exists('freeradius_atomic_write_file')) {
+	function freeradius_atomic_write_file($filename, $content, $mode = 0640)
+	{
+		$dir = dirname($filename);
+
+		if (!is_dir($dir)) {
+			if (!@mkdir($dir, 0755, true) && !is_dir($dir)) {
+				throw new RuntimeException("Unable to create directory: {$dir}");
+			}
+		}
+
+		// 같은 디렉토리에 temp 파일 생성 -> rename() 원자성 보장
+		$tmp = @tempnam($dir, basename($filename) . '.tmp.');
+		if ($tmp === false) {
+			throw new RuntimeException("Unable to create temp file for: {$filename}");
+		}
+
+		$fp = @fopen($tmp, 'wb');
+		if ($fp === false) {
+			@unlink($tmp);
+			throw new RuntimeException("Unable to open temp file for write: {$tmp}");
+		}
+
+		try {
+			if (!@flock($fp, LOCK_EX)) {
+				throw new RuntimeException("Unable to lock temp file: {$tmp}");
+			}
+
+			$written = 0;
+			$length = strlen($content);
+
+			while ($written < $length) {
+				$n = fwrite($fp, substr($content, $written));
+				if ($n === false) {
+					throw new RuntimeException("Write failed for temp file: {$tmp}");
+				}
+				$written += $n;
+			}
+
+			fflush($fp);
+			@chmod($tmp, $mode);
+			@flock($fp, LOCK_UN);
+			fclose($fp);
+			$fp = null;
+
+			if (!@rename($tmp, $filename)) {
+				throw new RuntimeException("Atomic rename failed: {$tmp} -> {$filename}");
+			}
+
+			@chmod($filename, $mode);
+		} finally {
+			if (is_resource($fp)) {
+				@flock($fp, LOCK_UN);
+				fclose($fp);
+			}
+			if (file_exists($tmp)) {
+				@unlink($tmp);
+			}
+		}
+
+		return true;
+	}
+}
+
+if (!function_exists('freeradius_glob_unlink')) {
+	function freeradius_glob_unlink($pattern)
+	{
+		$files = glob($pattern);
+		if ($files === false || empty($files)) {
+			return;
+		}
+
+		foreach ($files as $file) {
+			@unlink($file);
+		}
+	}
+}
+
+function freeradius_users_resync($via_rpc = false)
+{
+	global $config;
+
+	$lock_file = '/var/run/freeradius_users_resync.lock';
+	$lock_fp = @fopen($lock_file, 'c');
+
+	if ($lock_fp === false) {
+		log_error("freeradius_users_resync: unable to open lock file {$lock_file}");
+		return false;
 	}
 
-	if (!empty($arrusers)) {
-		foreach ($arrusers as $users) {
-			// Variables for users file defined parameters
-			$varusersusername = $users['varusersusername'];
-			$varuserspassword = $users['varuserspassword'];
+	if (!@flock($lock_fp, LOCK_EX)) {
+		fclose($lock_fp);
+		log_error("freeradius_users_resync: unable to acquire lock {$lock_file}");
+		return false;
+	}
 
-			// Check password encryption
-			$varuserspasswordencryption = ($users['varuserspasswordencryption'] ?: 'Cleartext-Password');
-			switch ($varuserspasswordencryption) {
-				case "MD5-Password":
-					$varuserspassword = md5($varuserspassword);
-					break;
-				case "MD5-Password-hashed":
-					$varuserspassword = $users['varuserspassword']; // use hashed password as-is
-					$varuserspasswordencryption = "MD5-Password";
-					break;
-				case "NT-Password-hashed":
-					$varuserspassword = $users['varuserspassword'];
-					$varuserspasswordencryption = "NT-Password";
-					break;
-				default:
-					$varuserspassword = $users['varuserspassword'];
-			}
+	try {
+		$conf = '';
 
-			$varusersauthmethod = $users['varusersauthmethod'];
-			$varusersmotpinitsecret = $users['varusersmotpinitsecret'];
-			$varusersmotppin = $users['varusersmotppin'];
-			$varusersmotpoffset = ($users['varusersmotpoffset'] ?: '0');
+		if (is_array($config['installedpackages']['freeradius']['config'])) {
+			$arrusers = $config['installedpackages']['freeradius']['config'];
+		} else {
+			$arrusers = array();
+		}
 
-			$varuserssimultaneousconnect = ($users['varuserssimultaneousconnect'] ?: '');
-			$varuserswisprredirectionurl = $users['varuserswisprredirectionurl'];
-			$varusersframedipaddress = $users['varusersframedipaddress'];
-			$varusersframedipnetmask = $users['varusersframedipnetmask'];
-			$varusersframedroute = $users['varusersframedroute'];
-			if (is_ipaddrv6($users['varusersframedip6address'])) {
-				$varusersframedip6address = $users['varusersframedip6address'];
-			} elseif (is_subnetv6($users['varusersframedip6address'])) {
-				$varusersframedip6prefix = $users['varusersframedip6address'];
-			}
-			$varusersframedip6route = $users['varusersframedip6route'];
-			$varusersexpiration = $users['varusersexpiration'];
-			$varuserssessiontimeout = $users['varuserssessiontimeout'];
-			$varuserslogintime = $users['varuserslogintime'];
-			$varusersvlanid = $users['varusersvlanid'];
+		if (!empty($arrusers)) {
+			foreach ($arrusers as $users) {
+				// 반복마다 반드시 초기화
+				$varusersframedip6address = '';
+				$varusersframedip6prefix = '';
 
-			// GUI uses minutes but RADIUS needs seconds so we do a multiplication
-			$varusersamountoftime = ($users['varusersamountoftime'] ?: '');
-			$varusersamountoftime = (int) $varusersamountoftime * 60;
-			$varuserspointoftime = $users['varuserspointoftime'];
+				// Variables for users file defined parameters
+				$varusersusername = $users['varusersusername'];
+				$varuserspassword = $users['varuserspassword'];
 
-			// GUI uses MB but RADIUS needs Bytes so we do a multiplication
-			$varusersmaxtotaloctets = ($users['varusersmaxtotaloctets'] ?: '');
-			$varuserstopupoctets = ($users['$varuserstopupoctets'] ?: '');
-			$varusersmaxtotaloctets = ((int) $varusersmaxtotaloctets * 1024 * 1024)+((int) $varuserstopupoctets * 1024 * 1024);
-			$varusersmaxtotaloctetstimerange = $users['varusersmaxtotaloctetstimerange'];
-
-			// GUI uses Kbit but RADIUS needs bits so we do a multiplication
-			// Use 1000 (Kbit) and not 1024 (Kibibit) to match the division used by Captive Portal
-			$varusersmaxbandwidthup = ($users['varusersmaxbandwidthup'] ?: '');
-			$varusersmaxbandwidthup = (int) $varusersmaxbandwidthup * 1000;
-			$varusersmaxbandwidthdown = ($users['varusersmaxbandwidthdown'] ?: '');
-			$varusersmaxbandwidthdown = (int) $varusersmaxbandwidthdown * 1000;
-
-			// Accounting-Interim-Interval - Must not be smaller than 60 and should be bigger than 600s
-			if (($users['varusersacctinteriminterval'] >= '0') && ($users['varusersacctinteriminterval'] < '60')) {
-				$varusersacctinteriminterval = 60;
-			} else {
-				$varusersacctinteriminterval = $users['varusersacctinteriminterval'];
-			}
-
-			// Clear variables for next user foreach additional options TOP
-			$varuserstopadditionaloptions = '';
-			$varusersadditionaloptionstop = '';
-
-			if (!empty($users['varuserstopadditionaloptions'])) {
-				$varuserstopadditionaloptions = explode("|", ($users['varuserstopadditionaloptions']));
-				foreach ($varuserstopadditionaloptions as $toptmp) {
-					$varusersadditionaloptionstop .= $toptmp . "\n";
+				// Check password encryption
+				$varuserspasswordencryption = ($users['varuserspasswordencryption'] ?: 'Cleartext-Password');
+				switch ($varuserspasswordencryption) {
+					case "MD5-Password":
+						$varuserspassword = md5($varuserspassword);
+						break;
+					case "MD5-Password-hashed":
+						$varuserspassword = $users['varuserspassword']; // use hashed password as-is
+						$varuserspasswordencryption = "MD5-Password";
+						break;
+					case "NT-Password-hashed":
+						$varuserspassword = $users['varuserspassword'];
+						$varuserspasswordencryption = "NT-Password";
+						break;
+					default:
+						$varuserspassword = $users['varuserspassword'];
 				}
-			}
 
-			// Clear variables for next user foreach additional options: CHECK-ITEMS
-			$varuserscheckitemsadditionaloptions = '';
-			$varusersadditionaloptionscheckitems = '';
+				$varusersauthmethod = $users['varusersauthmethod'];
+				$varusersmotpinitsecret = $users['varusersmotpinitsecret'];
+				$varusersmotppin = $users['varusersmotppin'];
+				$varusersmotpoffset = ($users['varusersmotpoffset'] ?: '0');
 
-			if (!empty($users['varuserscheckitemsadditionaloptions'])) {
-				$varuserscheckitemsadditionaloptions = explode("|", ($users['varuserscheckitemsadditionaloptions']));
-				$varusersadditionaloptionscheckitems .= '';
-				foreach ($varuserscheckitemsadditionaloptions as $checkitemtmp) {
-					$varusersadditionaloptionscheckitems .= "{$checkitemtmp}" . " ";
+				$varuserssimultaneousconnect = ($users['varuserssimultaneousconnect'] ?: '');
+				$varuserswisprredirectionurl = $users['varuserswisprredirectionurl'];
+				$varusersframedipaddress = $users['varusersframedipaddress'];
+				$varusersframedipnetmask = $users['varusersframedipnetmask'];
+				$varusersframedroute = $users['varusersframedroute'];
+
+				if (is_ipaddrv6($users['varusersframedip6address'])) {
+					$varusersframedip6address = $users['varusersframedip6address'];
+				} elseif (is_subnetv6($users['varusersframedip6address'])) {
+					$varusersframedip6prefix = $users['varusersframedip6address'];
 				}
-			}
 
-			// Clear variables for next user foreach additional options: REPLY-ITEMS
-			$varusersreplyitemsadditionaloptions = '';
-			$varusersadditionaloptionsreplyitems = '';
+				$varusersframedip6route = $users['varusersframedip6route'];
+				$varusersexpiration = $users['varusersexpiration'];
+				$varuserssessiontimeout = $users['varuserssessiontimeout'];
+				$varuserslogintime = $users['varuserslogintime'];
+				$varusersvlanid = $users['varusersvlanid'];
 
-			if (!empty($users['varusersreplyitemsadditionaloptions'])) {
-				$varusersreplyitemsadditionaloptions = explode("|", ($users['varusersreplyitemsadditionaloptions']));
-				$varusersadditionaloptionsreplyitems .= '';
-				foreach ($varusersreplyitemsadditionaloptions as $replyitemtmp) {
-					$varusersadditionaloptionsreplyitems .= $replyitemtmp . "\n\t";
-				}
-			}
+				// GUI uses minutes but RADIUS needs seconds so we do a multiplication
+				$varusersamountoftime = ($users['varusersamountoftime'] ?: '');
+				$varusersamountoftime = (int)$varusersamountoftime * 60;
+				$varuserspointoftime = $users['varuserspointoftime'];
 
-			// Empty variable
-			$varuserscheckitem = '';
-			$varusersreplyitem = '';
+				// GUI uses MB but RADIUS needs Bytes so we do a multiplication
+				$varusersmaxtotaloctets = ($users['varusersmaxtotaloctets'] ?: '');
 
-			// check if mobile otp is disabled
-			if ($users['varusersmotpenable'] == '') {
-				// If someone does not want to use username/password but entry "DEFAULT" instead then we can disable this
-				if (($users['varusersusername'] == '') && ($users['varuserspassword'] == '')) {
-					$varuserscheckitem = '';
+				// 오타 수정: '$varuserstopupoctets' -> 'varuserstopupoctets'
+				$varuserstopupoctets = ($users['varuserstopupoctets'] ?: '');
+
+				$varusersmaxtotaloctets =
+					((int)$varusersmaxtotaloctets * 1024 * 1024) +
+					((int)$varuserstopupoctets * 1024 * 1024);
+
+				$varusersmaxtotaloctetstimerange = $users['varusersmaxtotaloctetstimerange'];
+
+				// GUI uses Kbit but RADIUS needs bits so we do a multiplication
+				// Use 1000 (Kbit) and not 1024 (Kibibit) to match the division used by Captive Portal
+				$varusersmaxbandwidthup = ($users['varusersmaxbandwidthup'] ?: '');
+				$varusersmaxbandwidthup = (int)$varusersmaxbandwidthup * 1000;
+				$varusersmaxbandwidthdown = ($users['varusersmaxbandwidthdown'] ?: '');
+				$varusersmaxbandwidthdown = (int)$varusersmaxbandwidthdown * 1000;
+
+				// Accounting-Interim-Interval - Must not be smaller than 60 and should be bigger than 600s
+				if (($users['varusersacctinteriminterval'] >= '0') && ($users['varusersacctinteriminterval'] < '60')) {
+					$varusersacctinteriminterval = 60;
 				} else {
-					// Add the user attributes to each user.
-					$varuserscheckitem = '"' . $varusersusername . '"' . " {$varuserspasswordencryption} := " . '"' . $varuserspassword .'"';
+					$varusersacctinteriminterval = $users['varusersacctinteriminterval'];
 				}
-			// end of check if otp is enabled
-			} else {
-				// if otp is enabled we need to set Auth-Type to accept because password will be checked when the otp script gets executed in reply-item list
-				// prevent overwrite with '' on package update
-				if (empty($varusersauthmethod)) {
-					$varusersauthmethod = "motp";
+
+				// Clear variables for next user foreach additional options TOP
+				$varuserstopadditionaloptions = '';
+				$varusersadditionaloptionstop = '';
+
+				if (!empty($users['varuserstopadditionaloptions'])) {
+					$varuserstopadditionaloptions = explode("|", ($users['varuserstopadditionaloptions']));
+					foreach ($varuserstopadditionaloptions as $toptmp) {
+						$varusersadditionaloptionstop .= $toptmp . "\n";
+					}
 				}
-				$varuserscheckitem = "\"{$varusersusername}\" Auth-Type = {$varusersauthmethod}";
-			}
 
-			// Add additional CHECK-ITEMS here. Different formatting in "users" file needed.
-			if ($varuserssimultaneousconnect != '') {
-				$varuserscheckitem .= ", Simultaneous-Use := \"{$varuserssimultaneousconnect}\"";
-			}
-			if ($varusersexpiration != '') {
-				$varuserscheckitem .= ", Expiration := \"{$varusersexpiration}\"";
-			}
-			if ($varuserslogintime != '') {
-				$varuserscheckitem .= ", Login-Time := \"{$varuserslogintime}\"";
-			}
-			if ($varusersamountoftime != '') {
-				$varuserscheckitem .= ", Max-{$varuserspointoftime}-Session := {$varusersamountoftime}";
-			}
-			if ($varusersadditionaloptionscheckitems != '') {
-				$varuserscheckitem .= ", {$varusersadditionaloptionscheckitems}";
-			}
+				// Clear variables for next user foreach additional options: CHECK-ITEMS
+				$varuserscheckitemsadditionaloptions = '';
+				$varusersadditionaloptionscheckitems = '';
 
-			// this is the part for mobile otp
-			if ($users['varusersmotpenable'] == 'on') {
-				$varusersreplyitem .= <<<EOD
+				if (!empty($users['varuserscheckitemsadditionaloptions'])) {
+					$varuserscheckitemsadditionaloptions = explode("|", ($users['varuserscheckitemsadditionaloptions']));
+					$varusersadditionaloptionscheckitems .= '';
+					foreach ($varuserscheckitemsadditionaloptions as $checkitemtmp) {
+						$varusersadditionaloptionscheckitems .= "{$checkitemtmp}" . " ";
+					}
+				}
+
+				// Clear variables for next user foreach additional options: REPLY-ITEMS
+				$varusersreplyitemsadditionaloptions = '';
+				$varusersadditionaloptionsreplyitems = '';
+
+				if (!empty($users['varusersreplyitemsadditionaloptions'])) {
+					$varusersreplyitemsadditionaloptions = explode("|", ($users['varusersreplyitemsadditionaloptions']));
+					$varusersadditionaloptionsreplyitems .= '';
+					foreach ($varusersreplyitemsadditionaloptions as $replyitemtmp) {
+						$varusersadditionaloptionsreplyitems .= $replyitemtmp . "\n\t";
+					}
+				}
+
+				// Empty variable
+				$varuserscheckitem = '';
+				$varusersreplyitem = '';
+
+				// check if mobile otp is disabled
+				if ($users['varusersmotpenable'] == '') {
+					// If someone does not want to use username/password but entry "DEFAULT" instead then we can disable this
+					if (($users['varusersusername'] == '') && ($users['varuserspassword'] == '')) {
+						$varuserscheckitem = '';
+					} else {
+						// Add the user attributes to each user.
+						$varuserscheckitem = '"' . $varusersusername . '"' . " {$varuserspasswordencryption} := " . '"' . $varuserspassword . '"';
+					}
+					// end of check if otp is enabled
+				} else {
+					// if otp is enabled we need to set Auth-Type to accept because password will be checked when the otp script gets executed in reply-item list
+					// prevent overwrite with '' on package update
+					if (empty($varusersauthmethod)) {
+						$varusersauthmethod = "motp";
+					}
+					$varuserscheckitem = "\"{$varusersusername}\" Auth-Type = {$varusersauthmethod}";
+				}
+
+				// Add additional CHECK-ITEMS here. Different formatting in "users" file needed.
+				if ($varuserssimultaneousconnect != '') {
+					$varuserscheckitem .= ", Simultaneous-Use := \"{$varuserssimultaneousconnect}\"";
+				}
+				if ($varusersexpiration != '') {
+					$varuserscheckitem .= ", Expiration := \"{$varusersexpiration}\"";
+				}
+				if ($varuserslogintime != '') {
+					$varuserscheckitem .= ", Login-Time := \"{$varuserslogintime}\"";
+				}
+				if ($varusersamountoftime != '') {
+					$varuserscheckitem .= ", Max-{$varuserspointoftime}-Session := {$varusersamountoftime}";
+				}
+				if ($varusersadditionaloptionscheckitems != '') {
+					$varuserscheckitem .= ", {$varusersadditionaloptionscheckitems}";
+				}
+
+				// this is the part for mobile otp
+				if ($users['varusersmotpenable'] == 'on') {
+					$varusersreplyitem .= <<<EOD
 
 	MOTP-Init-Secret = {$varusersmotpinitsecret},
 	MOTP-PIN = {$varusersmotppin},
 	MOTP-Offset = {$varusersmotpoffset}
 EOD;
-			} else {
-				$varusersreplyitem .= '';
-			}
-
-			// Add additional REPLY-ITEMS here. Different formatting in "users" file needed.
-			if ($varusersframedipaddress != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
+				} else {
+					$varusersreplyitem .= '';
 				}
-				$varusersreplyitem .= <<<EOD
+
+				// Add additional REPLY-ITEMS here. Different formatting in "users" file needed.
+				if ($varusersframedipaddress != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	Framed-IP-Address = {$varusersframedipaddress}
 EOD;
-			}
-			if ($varusersframedipnetmask != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varusersframedipnetmask != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	Framed-IP-Netmask = {$varusersframedipnetmask}
 EOD;
-			}
-			if ($varusersframedroute != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varusersframedroute != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	Framed-Route = "{$varusersframedroute}"
 EOD;
-			}
-			if ($varusersframedip6address != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varusersframedip6address != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	Framed-IPv6-Address = {$varusersframedip6address}
 EOD;
-			}
-			if ($varusersframedip6prefix != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varusersframedip6prefix != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	Framed-IPv6-Prefix = {$varusersframedip6prefix}
 EOD;
-			}
-			if ($varusersframedip6route != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varusersframedip6route != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	Framed-IPv6-Route = "{$varusersframedip6route}"
 EOD;
-			}
-			if ($varuserssessiontimeout != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varuserssessiontimeout != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	Session-Timeout := {$varuserssessiontimeout}
 EOD;
-			}
-			if ($varusersvlanid != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varusersvlanid != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	Tunnel-Type = VLAN,
 	Tunnel-Medium-Type = IEEE-802,
 	Tunnel-Private-Group-ID = "{$varusersvlanid}"
 EOD;
-			}
-			if ($varusersmaxbandwidthup != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varusersmaxbandwidthup != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	WISPr-Bandwidth-Max-Up := {$varusersmaxbandwidthup}
 EOD;
-			}
-			if ($varusersmaxbandwidthdown != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varusersmaxbandwidthdown != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	WISPr-Bandwidth-Max-Down := {$varusersmaxbandwidthdown}
 EOD;
-			}
-			if ($varusersacctinteriminterval != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varusersacctinteriminterval != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	Acct-Interim-Interval := {$varusersacctinteriminterval}
 EOD;
-			}
-			if ($varuserswisprredirectionurl != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				$varusersreplyitem .= <<<EOD
+				if ($varuserswisprredirectionurl != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= <<<EOD
 
 	WISPr-Redirection-URL := {$varuserswisprredirectionurl}
 EOD;
-			}
-			// If an octet limit is set we create the files for the limit and the counter. Further we call an exec script which checks if the limit is reached or not
-			if ($varusersmaxtotaloctets != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
 				}
-				// create exec script
-				$varFREERADIUS_SCRIPTS = FREERADIUS_SCRIPTS;
-				$varusersreplyitem .= <<<EOD
+
+				// If an octet limit is set we create the files for the limit and the counter.
+				if ($varusersmaxtotaloctets != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+
+					$varFREERADIUS_SCRIPTS = FREERADIUS_SCRIPTS;
+					$varusersreplyitem .= <<<EOD
 
 	pfSense-Max-Total-Octets := {$varusersmaxtotaloctets},
-
 	Exec-Program-Wait = "/bin/sh {$varFREERADIUS_SCRIPTS}/datacounter_auth.sh {$varusersusername} {$varusersmaxtotaloctetstimerange}"
 EOD;
-				// create limit file - will be always overwritten so we can increase limit from GUI
-				file_put_contents("/var/log/radacct/datacounter/{$varusersmaxtotaloctetstimerange}/max-octets-{$varusersusername}", $varusersmaxtotaloctets, LOCK_EX);
-				// if used-octets file exist we do NOT overwrite this file!!!
-				if (!file_exists("/var/log/radacct/datacounter/{$varusersmaxtotaloctetstimerange}/used-octets-{$varusersusername}")) {
-					file_put_contents("/var/log/radacct/datacounter/{$varusersmaxtotaloctetstimerange}/used-octets-{$varusersusername}", "0", LOCK_EX);
-				}
-			} else {
-				// If an octet limit is NOT set we delete the files for the limit and the counter.
-				unlink_if_exists("/var/log/radacct/datacounter/{$varusersmaxtotaloctetstimerange}/max-octets-{$varusersusername}");
-				unlink_if_exists("/var/log/radacct/datacounter/{$varusersmaxtotaloctetstimerange}/used-octets-{$varusersusername}*");
-			}
-			if ($varusersadditionaloptionsreplyitems != '') {
-				if ($varusersreplyitem != '') {
-					$varusersreplyitem .= ",";
-				}
-				$varusersreplyitem .= "\n\t{$varusersadditionaloptionsreplyitems}";
-			}
 
-			// Cosmetic fix - This is just to make a blank new line after each user entry
-			$varusersreplyitem .= "\n\n";
+					$counter_dir = "/var/log/radacct/datacounter/{$varusersmaxtotaloctetstimerange}";
+					$max_file = "{$counter_dir}/max-octets-{$varusersusername}";
+					$used_file = "{$counter_dir}/used-octets-{$varusersusername}";
 
-			$conf .= <<<EOD
+					if (!is_dir($counter_dir)) {
+						@mkdir($counter_dir, 0755, true);
+					}
+
+					// limit file - 항상 원자 교체
+					freeradius_atomic_write_file($max_file, (string)$varusersmaxtotaloctets, 0640);
+
+					// used-octets file - 없을 때만 생성
+					if (!file_exists($used_file)) {
+						freeradius_atomic_write_file($used_file, "0", 0640);
+					}
+				} else {
+					$counter_dir = "/var/log/radacct/datacounter/{$varusersmaxtotaloctetstimerange}";
+					@unlink("{$counter_dir}/max-octets-{$varusersusername}");
+
+					// wildcard 삭제는 glob으로 처리
+					freeradius_glob_unlink("{$counter_dir}/used-octets-{$varusersusername}*");
+				}
+
+				if ($varusersadditionaloptionsreplyitems != '') {
+					if ($varusersreplyitem != '') {
+						$varusersreplyitem .= ",";
+					}
+					$varusersreplyitem .= "\n\t{$varusersadditionaloptionsreplyitems}";
+				}
+
+				// Cosmetic fix - This is just to make a blank new line after each user entry
+				$varusersreplyitem .= "\n\n";
+
+				$conf .= <<<EOD
 {$varusersadditionaloptionstop}
 {$varuserscheckitem}
 {$varusersreplyitem}
 
 EOD;
-		} // endforeach
-	} // endif
+			}
+		}
+		$filename = FREERADIUS_RADDB . '/users';
 
-	$filename = FREERADIUS_RADDB . '/users';
-	file_put_contents($filename, $conf);
-	chmod($filename, 0640);
+		// users 파일도 원자 교체
+		freeradius_atomic_write_file($filename, $conf, 0640);
 
-	freeradius_sync_on_changes();
-	// Do not restart on boot
-	// Will get restarted later by freeradius_clients_resync() if called via XMLRPC sync
-	if ($via_rpc === false && !platform_booting()) {
-		restart_service("radiusd");
+		freeradius_sync_on_changes();
+
+		// 락을 잡은 상태에서 restart까지 수행하면 동시 호출 시 서비스 재시작도 직렬화됨
+		if ($via_rpc === false && !platform_booting()) {
+			restart_service("radiusd");
+		}
+
+		return true;
+	} catch (Throwable $e) {
+		log_error("freeradius_users_resync failed: " . $e->getMessage());
+		return false;
+	} finally {
+		@flock($lock_fp, LOCK_UN);
+		fclose($lock_fp);
 	}
 }
 
+function freeradius_build_single_user_stanza(array $users): string
+{
+	// 반복마다 반드시 초기화
+	$varusersframedip6address = '';
+	$varusersframedip6prefix = '';
+
+	// Variables for users file defined parameters
+	$varusersusername = $users['varusersusername'] ?? '';
+	$varuserspassword = $users['varuserspassword'] ?? '';
+
+	// Check password encryption
+	$varuserspasswordencryption = ($users['varuserspasswordencryption'] ?? '') ?: 'Cleartext-Password';
+	switch ($varuserspasswordencryption) {
+		case "MD5-Password":
+			$varuserspassword = md5($varuserspassword);
+			break;
+		case "MD5-Password-hashed":
+			$varuserspassword = $users['varuserspassword'] ?? '';
+			$varuserspasswordencryption = "MD5-Password";
+			break;
+		case "NT-Password-hashed":
+			$varuserspassword = $users['varuserspassword'] ?? '';
+			$varuserspasswordencryption = "NT-Password";
+			break;
+		default:
+			$varuserspassword = $users['varuserspassword'] ?? '';
+	}
+
+	$varusersauthmethod = $users['varusersauthmethod'] ?? '';
+	$varusersmotpinitsecret = $users['varusersmotpinitsecret'] ?? '';
+	$varusersmotppin = $users['varusersmotppin'] ?? '';
+	$varusersmotpoffset = ($users['varusersmotpoffset'] ?? '') ?: '0';
+
+	$varuserssimultaneousconnect = ($users['varuserssimultaneousconnect'] ?? '') ?: '';
+	$varuserswisprredirectionurl = $users['varuserswisprredirectionurl'] ?? '';
+	$varusersframedipaddress = $users['varusersframedipaddress'] ?? '';
+	$varusersframedipnetmask = $users['varusersframedipnetmask'] ?? '';
+	$varusersframedroute = $users['varusersframedroute'] ?? '';
+
+	if (!empty($users['varusersframedip6address']) && is_ipaddrv6($users['varusersframedip6address'])) {
+		$varusersframedip6address = $users['varusersframedip6address'];
+	} elseif (!empty($users['varusersframedip6address']) && is_subnetv6($users['varusersframedip6address'])) {
+		$varusersframedip6prefix = $users['varusersframedip6address'];
+	}
+
+	$varusersframedip6route = $users['varusersframedip6route'] ?? '';
+	$varusersexpiration = $users['varusersexpiration'] ?? '';
+	$varuserssessiontimeout = $users['varuserssessiontimeout'] ?? '';
+	$varuserslogintime = $users['varuserslogintime'] ?? '';
+	$varusersvlanid = $users['varusersvlanid'] ?? '';
+
+	// GUI uses minutes but RADIUS needs seconds
+	$varusersamountoftime = ($users['varusersamountoftime'] ?? '') ?: '';
+	$varusersamountoftime = (int)$varusersamountoftime * 60;
+	$varuserspointoftime = $users['varuserspointoftime'] ?? '';
+
+	// GUI uses MB but RADIUS needs Bytes
+	$varusersmaxtotaloctets = ($users['varusersmaxtotaloctets'] ?? '') ?: '';
+	$varuserstopupoctets = ($users['varuserstopupoctets'] ?? '') ?: '';
+
+	$varusersmaxtotaloctets =
+		((int)$varusersmaxtotaloctets * 1024 * 1024) +
+		((int)$varuserstopupoctets * 1024 * 1024);
+
+	$varusersmaxtotaloctetstimerange = $users['varusersmaxtotaloctetstimerange'] ?? '';
+
+	// GUI uses Kbit but RADIUS needs bits
+	$varusersmaxbandwidthup = ($users['varusersmaxbandwidthup'] ?? '') ?: '';
+	$varusersmaxbandwidthup = (int)$varusersmaxbandwidthup * 1000;
+
+	$varusersmaxbandwidthdown = ($users['varusersmaxbandwidthdown'] ?? '') ?: '';
+	$varusersmaxbandwidthdown = (int)$varusersmaxbandwidthdown * 1000;
+
+	// Accounting-Interim-Interval
+	$acct_interim_raw = (string)($users['varusersacctinteriminterval'] ?? '');
+	if ($acct_interim_raw !== '' && (int)$acct_interim_raw >= 0 && (int)$acct_interim_raw < 60) {
+		$varusersacctinteriminterval = 60;
+	} else {
+		$varusersacctinteriminterval = $acct_interim_raw;
+	}
+	// Additional options TOP
+	$varuserstopadditionaloptions = '';
+	$varusersadditionaloptionstop = '';
+
+	if (!empty($users['varuserstopadditionaloptions'])) {
+		$varuserstopadditionaloptions = explode("|", $users['varuserstopadditionaloptions']);
+		foreach ($varuserstopadditionaloptions as $toptmp) {
+			$varusersadditionaloptionstop .= $toptmp . "\n";
+		}
+	}
+
+	// Additional options CHECK-ITEMS
+	$varuserscheckitemsadditionaloptions = '';
+	$varusersadditionaloptionscheckitems = '';
+
+	if (!empty($users['varuserscheckitemsadditionaloptions'])) {
+		$varuserscheckitemsadditionaloptions = explode("|", $users['varuserscheckitemsadditionaloptions']);
+		foreach ($varuserscheckitemsadditionaloptions as $checkitemtmp) {
+			$varusersadditionaloptionscheckitems .= "{$checkitemtmp} ";
+		}
+		$varusersadditionaloptionscheckitems = rtrim($varusersadditionaloptionscheckitems);
+	}
+
+	// Additional options REPLY-ITEMS
+	$varusersreplyitemsadditionaloptions = '';
+	$varusersadditionaloptionsreplyitems = '';
+
+	if (!empty($users['varusersreplyitemsadditionaloptions'])) {
+		$varusersreplyitemsadditionaloptions = explode("|", $users['varusersreplyitemsadditionaloptions']);
+		foreach ($varusersreplyitemsadditionaloptions as $replyitemtmp) {
+			$varusersadditionaloptionsreplyitems .= $replyitemtmp . "\n\t";
+		}
+		$varusersadditionaloptionsreplyitems = rtrim($varusersadditionaloptionsreplyitems);
+	}
+
+	// Empty variable
+	$varuserscheckitem = '';
+	$varusersreplyitem = '';
+
+	// check if mobile otp is disabled
+	if (($users['varusersmotpenable'] ?? '') == '') {
+		// DEFAULT entry support
+		if (($users['varusersusername'] ?? '') == '' && ($users['varuserspassword'] ?? '') == '') {
+			$varuserscheckitem = '';
+		} else {
+			$varuserscheckitem = '"' . $varusersusername . '"' . " {$varuserspasswordencryption} := " . '"' . $varuserspassword . '"';
+		}
+	} else {
+		if (empty($varusersauthmethod)) {
+			$varusersauthmethod = "motp";
+		}
+		$varuserscheckitem = "\"{$varusersusername}\" Auth-Type = {$varusersauthmethod}";
+	}
+
+	// CHECK-ITEMS
+	if ($varuserssimultaneousconnect != '') {
+		$varuserscheckitem .= ", Simultaneous-Use := \"{$varuserssimultaneousconnect}\"";
+	}
+	if ($varusersexpiration != '') {
+		$varuserscheckitem .= ", Expiration := \"{$varusersexpiration}\"";
+	}
+	if ($varuserslogintime != '') {
+		$varuserscheckitem .= ", Login-Time := \"{$varuserslogintime}\"";
+	}
+	if ($varusersamountoftime != '') {
+		$varuserscheckitem .= ", Max-{$varuserspointoftime}-Session := {$varusersamountoftime}";
+	}
+	if ($varusersadditionaloptionscheckitems != '') {
+		$varuserscheckitem .= ", {$varusersadditionaloptionscheckitems}";
+	}
+
+	// MOTP reply items
+	if (($users['varusersmotpenable'] ?? '') == 'on') {
+		$varusersreplyitem .= <<<EOD
+
+	MOTP-Init-Secret = {$varusersmotpinitsecret},
+	MOTP-PIN = {$varusersmotppin},
+	MOTP-Offset = {$varusersmotpoffset}
+EOD;
+	}
+
+	// REPLY-ITEMS
+	if ($varusersframedipaddress != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	Framed-IP-Address = {$varusersframedipaddress}
+EOD;
+	}
+	if ($varusersframedipnetmask != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	Framed-IP-Netmask = {$varusersframedipnetmask}
+EOD;
+	}
+	if ($varusersframedroute != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	Framed-Route = "{$varusersframedroute}"
+EOD;
+	}
+	if ($varusersframedip6address != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	Framed-IPv6-Address = {$varusersframedip6address}
+EOD;
+	}
+	if ($varusersframedip6prefix != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	Framed-IPv6-Prefix = {$varusersframedip6prefix}
+EOD;
+	}
+	if ($varusersframedip6route != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	Framed-IPv6-Route = "{$varusersframedip6route}"
+EOD;
+	}
+	if ($varuserssessiontimeout != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	Session-Timeout := {$varuserssessiontimeout}
+EOD;
+	}
+	if ($varusersvlanid != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	Tunnel-Type = VLAN,
+	Tunnel-Medium-Type = IEEE-802,
+	Tunnel-Private-Group-ID = "{$varusersvlanid}"
+EOD;
+	}
+	if ($varusersmaxbandwidthup != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	WISPr-Bandwidth-Max-Up := {$varusersmaxbandwidthup}
+EOD;
+	}
+	if ($varusersmaxbandwidthdown != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	WISPr-Bandwidth-Max-Down := {$varusersmaxbandwidthdown}
+EOD;
+	}
+	if ($varusersacctinteriminterval != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	Acct-Interim-Interval := {$varusersacctinteriminterval}
+EOD;
+	}
+	if ($varuserswisprredirectionurl != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= <<<EOD
+
+	WISPr-Redirection-URL := {$varuserswisprredirectionurl}
+EOD;
+	}
+
+	// Octet limit 관련 reply item은 유지
+	if ($varusersmaxtotaloctets != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+
+		$varFREERADIUS_SCRIPTS = FREERADIUS_SCRIPTS;
+		$varusersreplyitem .= <<<EOD
+
+	pfSense-Max-Total-Octets := {$varusersmaxtotaloctets},
+	Exec-Program-Wait = "/bin/sh {$varFREERADIUS_SCRIPTS}/datacounter_auth.sh {$varusersusername} {$varusersmaxtotaloctetstimerange}"
+EOD;
+
+		$counter_dir = "/var/log/radacct/datacounter/{$varusersmaxtotaloctetstimerange}";
+		$max_file = "{$counter_dir}/max-octets-{$varusersusername}";
+		$used_file = "{$counter_dir}/used-octets-{$varusersusername}";
+
+		if (!is_dir($counter_dir)) {
+			@mkdir($counter_dir, 0755, true);
+		}
+
+		// limit file - 항상 원자 교체
+		freeradius_atomic_write_file($max_file, (string)$varusersmaxtotaloctets, 0640);
+
+		// used-octets file - 없을 때만 생성
+		if (!file_exists($used_file)) {
+			freeradius_atomic_write_file($used_file, "0", 0640);
+		}
+	} else {
+		$counter_dir = "/var/log/radacct/datacounter/{$varusersmaxtotaloctetstimerange}";
+		@unlink("{$counter_dir}/max-octets-{$varusersusername}");
+
+		// wildcard 삭제는 glob으로 처리
+		freeradius_glob_unlink("{$counter_dir}/used-octets-{$varusersusername}*");
+	}
+	if ($varusersadditionaloptionsreplyitems != '') {
+		if ($varusersreplyitem != '') {
+			$varusersreplyitem .= ",";
+		}
+		$varusersreplyitem .= "\n\t{$varusersadditionaloptionsreplyitems}";
+	}
+
+	// Cosmetic fix
+	$varusersreplyitem .= "\n\n";
+
+	return <<<EOD
+{$varusersadditionaloptionstop}
+{$varuserscheckitem}
+{$varusersreplyitem}
+
+EOD;
+}
+
+if (!defined('FREERADIUS_RADDB')) {
+	define('FREERADIUS_RADDB', '/usr/local/etc/raddb');
+}
+
+/**
+ * ${confdir}, ${moddir} 형태를 실제 경로로 풀어준다.
+ */
+function freeradius_expand_raddb_path(string $path): string
+{
+	$map = [
+		'${confdir}' => FREERADIUS_RADDB,
+		'${moddir}' => FREERADIUS_RADDB . '/mods-config/files',
+	];
+
+	return strtr($path, $map);
+}
+
+/**
+ * mods-enabled/files 에서 active usersfile 을 찾는다.
+ * usersfile 이 명시되지 않으면 FreeRADIUS files 모듈 기본값(authorize)을 사용한다.
+ */
+function freeradius_detect_active_usersfile(): string
+{
+	$files_module = FREERADIUS_RADDB . '/mods-enabled/files';
+	$default_file = FREERADIUS_RADDB . '/mods-config/files/authorize';
+
+	if (!is_file($files_module)) {
+		return $default_file;
+	}
+
+	$lines = @file($files_module, FILE_IGNORE_NEW_LINES);
+	if (!is_array($lines)) {
+		return $default_file;
+	}
+
+	foreach ($lines as $line) {
+		// 주석 무시
+		if (preg_match('/^\s*#/', $line)) {
+			continue;
+		}
+
+		if (preg_match('/^\s*usersfile\s*=\s*(.+?)\s*$/', $line, $m)) {
+			$raw = trim($m[1], " \t\"'");
+			if ($raw !== '') {
+				return freeradius_expand_raddb_path($raw);
+			}
+		}
+	}
+
+	return $default_file;
+}
+
+/**
+ * 동기화 대상 파일 목록 반환
+ * - GUI 쪽에서 기대하는 users
+ * - 실제 인증에 쓰이는 active usersfile
+ */
+function freeradius_get_target_user_files(): array
+{
+	$targets = [
+		FREERADIUS_RADDB . '/users',
+		freeradius_detect_active_usersfile(),
+	];
+
+	$targets = array_values(array_unique($targets));
+
+	return $targets;
+}
+
+/**
+ * 줄바꿈 정규화 + 마지막 newline 보장
+ */
+function freeradius_normalize_text(string $text): string
+{
+	$text = str_replace(["\r\n", "\r"], "\n", $text);
+	$text = rtrim($text, "\n") . "\n";
+	return $text;
+}
+
+/**
+ * 파일 백업 생성
+ */
+function freeradius_backup_file(string $filename): bool
+{
+	if (!is_file($filename)) {
+		return false;
+	}
+
+	$backup = $filename . '.bak.' . date('Ymd-His');
+	return @copy($filename, $backup);
+}
+
+/**
+ * temp 파일에 쓴 뒤 rename 하는 원자적 저장
+ */
+function freeradius_atomic_write_file(string $filename, string $contents): bool
+{
+	$dir = dirname($filename);
+	$base = basename($filename);
+	$tmp = @tempnam($dir, $base . '.tmp.');
+
+	if ($tmp === false) {
+		log_error("freeradius_atomic_write_file: tempnam failed for {$filename}");
+		return false;
+	}
+
+	$contents = freeradius_normalize_text($contents);
+
+	if (@file_put_contents($tmp, $contents) === false) {
+		@unlink($tmp);
+		log_error("freeradius_atomic_write_file: failed to write temp file for {$filename}");
+		return false;
+	}
+
+	$perms = @fileperms($filename);
+	if ($perms !== false) {
+		@chmod($tmp, $perms & 0777);
+	}
+
+
+	if (!@rename($tmp, $filename)) {
+		@unlink($tmp);
+		log_error("freeradius_atomic_write_file: rename failed for {$filename}");
+		return false;
+	}
+
+	return true;
+}
+
+/**
+ * stanza 텍스트를 line 배열로 변환
+ */
+function freeradius_stanza_to_lines(string $stanza): array
+{
+	$stanza = freeradius_normalize_text($stanza);
+	$stanza = trim($stanza, "\n");
+
+	if ($stanza === '') {
+		return [];
+	}
+
+	return preg_split('/\n/', $stanza);
+}
+
+/**
+ * 파일 내에서 특정 username stanza의 [start, end] 범위를 찾는다.
+ * 규칙:
+ * - 헤더 줄은 "user" 또는 user 로 시작 가능
+ * - 뒤의 빈 줄 / 들여쓴 줄은 같은 stanza 로 간주
+ */
+function freeradius_find_user_stanza_ranges(array $lines, string $username): array
+{
+	$ranges = [];
+	$pattern = '/^\s*"?' . preg_quote($username, '/') . '"?\s+/';
+
+	$count = count($lines);
+
+	for ($i = 0; $i < $count; $i++) {
+		if (!preg_match($pattern, $lines[$i])) {
+			continue;
+		}
+
+		$start = $i;
+		$end = $i;
+
+		for ($j = $i + 1; $j < $count; $j++) {
+			$line = $lines[$j];
+
+			// 빈 줄은 stanza 일부로 허용
+			if (trim($line) === '') {
+				$end = $j;
+				continue;
+			}
+
+			// 들여쓴 continuation line
+			if (preg_match('/^[ \t]+/', $line)) {
+				$end = $j;
+				continue;
+			}
+
+			// 다음 stanza 시작
+			break;
+		}
+
+		$ranges[] = [$start, $end];
+		$i = $end;
+	}
+
+	return $ranges;
+}
+
+/**
+ * 지정한 파일에서 특정 user stanza를 교체한다.
+ * - 정확히 1개면 교체
+ * - 0개면 append
+ * - 2개 이상이면 중복으로 간주하고 실패
+ */
+function freeradius_replace_single_user_stanza(string $filename, string $username, string $new_stanza): bool
+{
+	if (!is_file($filename)) {
+		log_error("freeradius_replace_single_user_stanza: file not found: {$filename}");
+		return false;
+	}
+
+	$lines = @file($filename, FILE_IGNORE_NEW_LINES);
+	if (!is_array($lines)) {
+		log_error("freeradius_replace_single_user_stanza: unable to read {$filename}");
+		return false;
+	}
+
+	$ranges = freeradius_find_user_stanza_ranges($lines, $username);
+	$new_lines = freeradius_stanza_to_lines($new_stanza);
+
+	if (empty($new_lines)) {
+		log_error("freeradius_replace_single_user_stanza: empty stanza for {$username}");
+		return false;
+	}
+
+	if (count($ranges) > 1) {
+		log_error("freeradius_replace_single_user_stanza: duplicate stanza found for {$username} in {$filename}");
+		return false;
+	}
+
+	if (count($ranges) === 1) {
+		$start = $ranges[0][0];
+		$end = $ranges[0][1];
+		$length = $end - $start + 1;
+
+		array_splice($lines, $start, $length, $new_lines);
+	} else {
+		// 없으면 append
+		if (!empty($lines) && trim(end($lines)) !== '') {
+			$lines[] = '';
+		}
+		foreach ($new_lines as $line) {
+			$lines[] = $line;
+		}
+	}
+
+	$new_contents = implode("\n", $lines) . "\n";
+
+	if (!freeradius_atomic_write_file($filename, $new_contents)) {
+		return false;
+	}
+
+	return true;
+}
+
+/**
+ * radiusd 설정 검사
+ */
+function freeradius_validate_radiusd_config(): bool
+{
+	$out = [];
+	$ret = 1;
+
+	@exec('/usr/local/sbin/radiusd -C 2>&1', $out, $ret);
+
+	if ($ret !== 0) {
+		log_error("freeradius_validate_radiusd_config: radiusd -C failed: " . implode(' | ', $out));
+		return false;
+	}
+
+	return true;
+}
+
+function freeradius_reload_or_restart_radiusd(bool $reload_radiusd = true): bool
+{
+	if (function_exists('platform_booting') && platform_booting()) {
+		return true;
+	}
+
+	if (!freeradius_validate_radiusd_config()) {
+		return false;
+	}
+
+	/*
+     * PID 파일 우선
+     */
+	$pid = '';
+
+	if (is_file('/var/run/radiusd.pid')) {
+		$pid = trim((string)@file_get_contents('/var/run/radiusd.pid'));
+	}
+
+	/*
+     * PID 파일 없으면 pgrep
+     */
+	if ($pid === '') {
+		$out = [];
+		$ret = 1;
+
+		@exec("/bin/pgrep -f 'radiusd' 2>/dev/null | head -n 1", $out, $ret);
+
+		if ($ret === 0 && !empty($out[0])) {
+			$pid = trim($out[0]);
+		}
+	}
+
+	/*
+     * HUP reload
+     */
+	if ($pid !== '' && ctype_digit($pid)) {
+		$out = [];
+		$ret = 1;
+
+		@exec('/bin/kill -HUP ' . escapeshellarg($pid) . ' 2>&1', $out, $ret);
+
+		fr_debug_log("radiusd HUP pid={$pid}, ret={$ret}, out=" . implode(' | ', $out));
+
+		if ($ret === 0) {
+			return true;
+		}
+	}
+
+	/*
+     * fallback
+     */
+	$out = [];
+	$ret = 1;
+
+	@exec('/usr/sbin/service radiusd onerestart 2>&1', $out, $ret);
+
+	fr_debug_log("radiusd onerestart ret={$ret}, out=" . implode(' | ', $out));
+
+	return ($ret === 0);
+}
+
+function freeradius_update_runtime_user_files(string $username, string $new_stanza): bool
+{
+	$targets = freeradius_get_target_user_files();
+
+	foreach ($targets as $filename) {
+		if (!freeradius_replace_single_user_stanza($filename, $username, $new_stanza)) {
+			log_error("freeradius_update_runtime_user_files: failed updating {$filename} for {$username}");
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function fr_debug_log(string $msg): void
+{
+	$logfile = '/tmp/freeradius_update_debug.log';
+
+	$line = date('Y-m-d H:i:s') . ' ' . $msg . PHP_EOL;
+
+	@file_put_contents($logfile, $line, FILE_APPEND | LOCK_EX);
+}
+
+function freeradius_update_user(
+	string $username,
+	bool   $persist_config = true,
+	bool   $reload_radiusd = true,
+	bool   $sync_changes = false
+) {
+	global $config;
+
+	fr_debug_log("freeradius_update_user: START username={$username}");
+
+	$lock_file = '/var/run/freeradius_users_resync.lock';
+	$lock_fp = @fopen($lock_file, 'c');
+
+	if ($lock_fp === false) {
+		fr_debug_log("freeradius_update_user: FAIL unable to open lock file {$lock_file}");
+		return false;
+	}
+
+	fr_debug_log("freeradius_update_user: lock file opened");
+
+	if (!@flock($lock_fp, LOCK_EX)) {
+		fclose($lock_fp);
+		fr_debug_log("freeradius_update_user: FAIL unable to acquire lock {$lock_file}");
+		return false;
+	}
+
+	fr_debug_log("freeradius_update_user: lock acquired");
+
+	try {
+		if (!is_array($config['installedpackages']['freeradius']['config'] ?? null)) {
+			fr_debug_log("freeradius_update_user: freeradius user config is empty");
+			return true;
+		}
+
+		fr_debug_log(
+			"freeradius_update_user: user config count=" .
+			count($config['installedpackages']['freeradius']['config'])
+		);
+
+		$target_index = null;
+
+		foreach ($config['installedpackages']['freeradius']['config'] as $idx => $user) {
+			$cfg_username = $user['varusersusername'] ?? '';
+
+			fr_debug_log("freeradius_update_user: scan idx={$idx}, username={$cfg_username}");
+
+			if ($cfg_username === $username) {
+				$target_index = $idx;
+				break;
+			}
+		}
+
+		if ($target_index === null) {
+			fr_debug_log("freeradius_update_user: FAIL user not found username={$username}");
+			return false;
+		}
+
+		fr_debug_log("freeradius_update_user: user found index={$target_index}");
+
+		if ($persist_config && function_exists('write_config')) {
+			fr_debug_log("freeradius_update_user: write_config start");
+
+			write_config("FreeRADIUS: update user attributes for {$username}");
+
+			fr_debug_log("freeradius_update_user: write_config done");
+		} else {
+			fr_debug_log(
+				"freeradius_update_user: write_config skipped persist_config=" .
+				var_export($persist_config, true) .
+				", function_exists=" .
+				var_export(function_exists('write_config'), true)
+			);
+		}
+
+		if ($sync_changes && function_exists('freeradius_sync_on_changes')) {
+			fr_debug_log("freeradius_update_user: freeradius_sync_on_changes start");
+
+			freeradius_sync_on_changes();
+
+			fr_debug_log("freeradius_update_user: freeradius_sync_on_changes done");
+		} else {
+			fr_debug_log(
+				"freeradius_update_user: sync skipped sync_changes=" .
+				var_export($sync_changes, true) .
+				", function_exists=" .
+				var_export(function_exists('freeradius_sync_on_changes'), true)
+			);
+		}
+
+		if (!isset($config['installedpackages']['freeradius']['config'][$target_index]) ||
+			!is_array($config['installedpackages']['freeradius']['config'][$target_index])) {
+			fr_debug_log("freeradius_update_user: FAIL target user missing after sync index={$target_index}");
+			return false;
+		}
+
+		$target_user = $config['installedpackages']['freeradius']['config'][$target_index];
+
+		fr_debug_log("freeradius_update_user: build stanza start username={$username}");
+
+		$new_stanza = freeradius_build_single_user_stanza($target_user);
+
+		fr_debug_log("freeradius_update_user: new_stanza length=" . strlen($new_stanza));
+		fr_debug_log(
+			"freeradius_update_user: new_stanza preview=" .
+			str_replace("\n", " | ", substr($new_stanza, 0, 800))
+		);
+
+		if (trim($new_stanza) === '') {
+			fr_debug_log("freeradius_update_user: FAIL empty stanza username={$username}");
+			return false;
+		}
+
+		fr_debug_log("freeradius_update_user: update runtime user files start username={$username}");
+
+		$runtime_result = freeradius_update_runtime_user_files($username, $new_stanza);
+
+		fr_debug_log(
+			"freeradius_update_user: freeradius_update_runtime_user_files result=" .
+			var_export($runtime_result, true)
+		);
+
+		if (!$runtime_result) {
+			fr_debug_log("freeradius_update_user: FAIL update runtime user files username={$username}");
+			return false;
+		}
+
+		fr_debug_log("freeradius_update_user: radius reload/restart start username={$username}");
+
+		$radius_result = freeradius_reload_or_restart_radiusd($reload_radiusd);
+
+		fr_debug_log(
+			"freeradius_update_user: freeradius_reload_or_restart_radiusd result=" .
+			var_export($radius_result, true)
+		);
+
+		if (!$radius_result) {
+			fr_debug_log("freeradius_update_user: FAIL radiusd apply username={$username}");
+			return false;
+		}
+
+		fr_debug_log("freeradius_update_user: SUCCESS username={$username}");
+
+		return true;
+
+	} catch (Throwable $e) {
+		fr_debug_log(
+			"freeradius_update_user: EXCEPTION username={$username}, message=" .
+			$e->getMessage() .
+			", file=" .
+			$e->getFile() .
+			", line=" .
+			$e->getLine()
+		);
+
+		return false;
+
+	} finally {
+		@flock($lock_fp, LOCK_UN);
+		fclose($lock_fp);
+
+		fr_debug_log("freeradius_update_user: lock released username={$username}");
+	}
+}
 
 function freeradius_authorizedmacs_resync($restart_svc = true, $via_rpc = false) {
 	global $config;
@@ -861,7 +1831,7 @@ function freeradius_authorizedmacs_resync($restart_svc = true, $via_rpc = false)
 			$varmacsmaxbandwidthdown = (int) $varmacsmaxbandwidthdown * 1024;
 
 			// Accounting-Interim-Interval
-			if (($users['varmacsacctinteriminterval'] >= '0') && ($users['varmacsacctinteriminterval'] < '60')) {
+			if (($macs['varmacsacctinteriminterval'] >= '0') && ($macs['varmacsacctinteriminterval'] < '60')) {
 				$varmacsacctinteriminterval = 60;
 			} else {
 				$varmacsacctinteriminterval = $users['varmacsacctinteriminterval'];

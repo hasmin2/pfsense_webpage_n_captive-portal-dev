@@ -107,22 +107,21 @@ class APIFreeRADIUSUserUpdate extends APIModel {
                 $postfix = $item;
             }
             if (isset($this->initial_data["freeradius_" . $postfix])) {
-                $this->config["installedpackages"]["freeradius"]["config"][$index][$item] = $this->initial_data["freeradius_" . $postfix];
-                $this->validated_data["freeradius_" . $postfix] = $this->initial_data["freeradius_" . $postfix];
+                    $this->config["installedpackages"]["freeradius"]["config"][$index][$item] = $this->initial_data["freeradius_" . $postfix];
+                    $this->validated_data["freeradius_" . $postfix] = $this->initial_data["freeradius_" . $postfix];
             }
 
-        }
-        if(isset($this->initial_data["freeradius_maxtotaloctetstimerange"])) {
-            $timerange = $this->initial_data["freeradius_maxtotaloctetstimerange"];
-            $username = $this->initial_data["freeradius_username"];
-            $filepathall = "/var/log/radacct/datacounter/$timerange/used-octets-$username";
-
-            if (($use_file = fopen($filepathall, "w")) !== false) {
-                fwrite($use_file, $this->initial_data["freeradius_lastbasedata"]);
-                fclose($use_file);
+            if(isset($this->initial_data["freeradius_maxtotaloctetstimerange"])&&isset($this->initial_data["freeradius_lastbasedata"])) {
+                $timerange = $this->initial_data["freeradius_maxtotaloctetstimerange"];
+                $username = $this->initial_data["freeradius_username"];
+                $filepathall = "/var/log/radacct/datacounter/$timerange/used-octets-$username";
+                if (($use_file = fopen($filepathall, "w")) !== false) {
+                    fwrite($use_file, (string) ((int) ($this->initial_data["freeradius_lastbasedata"] * 1048576)));
+                    log_error($this->initial_data["freeradius_lastbasedata"]);
+                    fclose($use_file);
+                }
             }
         }
-
 
         $this->config["installedpackages"]["freeradius"]["config"][$index]['varuserscreatedate'] = date('Y/m/d H:i:s');
         $this->config["installedpackages"]["freeradius"]["config"][$index]["varusersmodified"] = "update";

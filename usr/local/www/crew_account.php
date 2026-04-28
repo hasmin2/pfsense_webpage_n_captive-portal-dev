@@ -13,12 +13,13 @@ global $adminlogin;
 $controldisplay="";
 $addbutton="";
 if($adminlogin==="admin"||$adminlogin==="vesseladmin") {
-    $controldisplay = '<td><button class="btn md line-gray" onclick="confirm_exportCsv()"><i class="ic-reset gray"></i>Export CSV</button>
+    $controldisplay = '<button class="btn md line-gray" onclick="confirm_exportCsv()"><i class="ic-reset gray"></i>Export CSV</button>
                        <button class="btn md line-gray" onclick="confirm_resetPw()"><i class="ic-reset gray"></i>Reset PW</button>
+                       <button class="btn md line-gray" onclick="confirm_setRandomPw()"><i class="ic-reset gray"></i>SET RANDOM PW</button>
                        <button class="btn md line-gray" onclick="confirm_resetData()"><i class="ic-reset gray"></i>Reset Data</button>
                             <button class="btn md line-gray" onclick="confirm_checkPw()"><i class="ic-check gray"></i>Check PW</button>
-                            <button class="btn md line-gray" onclick="confirm_delUser()"><i class="ic-delete gray"></i>Delete</button></td>';
-        $setupbutton = '<button class="btn-setting" onclick="popOpenAndDim(\'pop-modify-manage\', true)">Modify Voucher</button>';
+                            <button class="btn md line-gray" onclick="confirm_delUser()"><i class="ic-delete gray"></i>Delete</button></>';
+    $setupbutton = '<button class="btn-setting" onclick="popOpenAndDim(\'pop-modify-manage\', true)">Modify Voucher</button>';
     $addbutton = '<button class="btn-setting" onclick="popOpenAndDim(\'pop-set-manage\', true)">Add Voucher</button>';
 }
 else if($adminlogin==="customer"){
@@ -30,26 +31,22 @@ else{
 $cpzone='crew';
 
 if (isset($cpzone) && !empty($cpzone) && isset($a_cp[$cpzone]['zoneid'])) {
-	$cpzoneid = $a_cp[$cpzone]['zoneid'];
+    $cpzoneid = $a_cp[$cpzone]['zoneid'];
 }
 
 if (($_GET['act'] == "del") && !empty($cpzone)) {
-	captiveportal_disconnect_client($_GET['id'], 6);
+    captiveportal_disconnect_client($_GET['id'], 6);
 }
-if ($_POST['schedule_json'] && $_POST['userid']) {
-    $userid="";
-    $schedule=[];
-    $schedule_json = json_decode($_POST['schedule_json'], true);
-    foreach ($schedule_json as $eachItem) {
-        if(isset($eachItem['userid'])){
-            $userid=$eachItem['userid'];
-        }
-        else{
-            $schedule[]=$eachItem;
-        }
+if (!empty($_POST['schedule_json']) && !empty($_POST['userid'])) {
+    $userid = $_POST['userid'];
+    $schedule = json_decode($_POST['schedule_json'], true);
+
+    if (!is_array($schedule)) {
+        $schedule = [];
     }
-   set_scheduler($userid, $schedule);
-    echo '<script> location.replace("crew_account_processing.php");</script>';
+    set_scheduler($userid, $schedule);
+    header("Location: crew_account_processing.php");
+    exit;
 }
 if ($_POST['description'] && $_POST['userid']) {
     $description=$_POST['description'];
@@ -64,7 +61,6 @@ $gateways = return_gateways_array();
 $gateways_status = return_gateways_status(true);
 $terminaltypeoption='<option value="">Auto</option>';
 foreach ($gateways as $gname => $gateway){
-    $defaultgw = get_defaultgw($gateway);
     if (!startswith($gateway['terminal_type'], 'vpn')){
         $terminaltypeoption .= '<option value="'.$gname.'">'.$gname.'</option>';
     }
@@ -87,31 +83,310 @@ if (isset($_POST['modifyusers'])) {
 }
 
 if(isset($_POST['resetpw'])){ reset_wifi_user_pw($_POST['userlist']); exit(0);}
+if(isset($_POST['setrandompw'])){ reset_random_wifi_user_pw($_POST['userlist']); exit(0);}
 if(isset($_POST['resetdata'])){reset_wifi_user($_POST['userlist']);exit(0);}
 if(isset($_POST['deluser'])){del_wifi_user($_POST['userlist']);exit(0);}
 if ($_POST['dataamount']){
     create_wifi_user($_POST['dataamount'], $_POST['vouchernumber'], $_POST['randpwd'], $_POST['terminaltype'], $_POST['timeperiod']);
     echo '<script> location.replace("crew_account_processing.php");</script>';
 }
-////////////////////SIMPLE SELF API//////////////////////////
-
-if(isset($_POST['resetfw'])){reset_fw(); exit(0);}
-if(isset($_POST['resetcore'])){reset_core(); exit(0);}
-if(isset($_POST['rebootsvr'])){reboot_svr(); exit(0);}
-
-$terminate_biz_internet = isset($config['ban_all'])? "true" : "false";
-if($_POST['data_update']){
-    echo json_encode(array(
-        'crew_wifi_table' => $table_contents,
-    ));
-    exit(0);
-}
-////////////////////SIMPLE SELF API//////////////////////////
 ?>
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-<?php echo print_css_n_head();?>
+    <?php echo print_css_n_head();?>
+    <style>
+        /* ===== Scheduler Popup UI ===== */
+        .sched-popup .pop-cont {
+            padding: 20px 24px;
+            overflow-x: auto;
+        }
+
+        .sched-setup-table {
+            width: 100%;
+            border-collapse: collapse;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            overflow: hidden;
+            table-layout: fixed;
+        }
+
+        .sched-setup-table th {
+            background: #f1f3f5;
+            color: #495057;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 10px 12px;
+            text-align: center;
+            border-bottom: 2px solid #dee2e6;
+        }
+
+        .sched-setup-table td {
+            padding: 14px 10px;
+            text-align: center;
+            vertical-align: middle;
+            border-bottom: 1px solid #f1f3f5;
+        }
+
+        .sched-setup-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .sched-setup-table tr:hover {
+            background: #f8f9fa;
+        }
+        <style>
+         .sched-popup {
+             width: 780px;
+             max-width: 95%;
+             position: fixed;
+             left: 50%;
+             top: 50%;
+             transform: translate(-50%, -50%);
+             background: #071630;
+             border-radius: 24px;
+             box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+             border: 1px solid rgba(130, 160, 210, 0.18);
+             overflow: hidden;
+             color: #ffffff;
+             font-family: Arial, Helvetica, sans-serif;
+             z-index: 9999;
+         }
+
+        .sched-popup .pop-head {
+            position: relative;
+            padding: 22px 28px 10px 28px;
+        }
+
+        .sched-popup .pop-head .title {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 700;
+            line-height: 1.2;
+            color: #ffffff;
+        }
+
+        .sched-popup .pop-head .subtitle {
+            margin: 6px 0 0 0;
+            font-size: 16px;
+            color: #8fb1d8;
+            font-weight: 500;
+        }
+
+        .sched-popup .sched-close {
+            position: absolute;
+            right: 18px;
+            top: 18px;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            border: 1px solid rgba(153, 180, 220, 0.16);
+            background: rgba(255, 255, 255, 0.06);
+            color: #a9bddb;
+            font-size: 24px;
+            line-height: 42px;
+            text-align: center;
+            cursor: pointer;
+            transition: 0.2s ease;
+        }
+
+        .sched-popup .sched-close:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .sched-popup .pop-cont {
+            padding: 18px 20px 18px 20px;
+        }
+
+        .sched-setup-wrap {
+            border: 1px solid rgba(124, 155, 202, 0.18);
+            border-radius: 10px;
+            overflow: hidden;
+            background: rgba(6, 20, 44, 0.35);
+        }
+
+        .sched-setup-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .sched-setup-table thead th {
+            height: 48px;
+            padding: 0 10px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            color: #8fb1d8;
+            background: rgba(255, 255, 255, 0.02);
+            border-bottom: 1px solid rgba(124, 155, 202, 0.16);
+            text-align: center;
+        }
+
+        .sched-setup-table tbody tr {
+            border-bottom: 1px solid rgba(124, 155, 202, 0.12);
+        }
+
+        .sched-setup-table tbody tr:last-child {
+            border-bottom: 0;
+        }
+
+        .sched-setup-table tbody td {
+            height: 62px;
+            padding: 0 10px;
+            text-align: center;
+            vertical-align: middle;
+        }
+
+        .sched-no-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 22px;
+            height: 22px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.08);
+            color: #8fb1d8;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .sched-act-check {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 5px;
+            border: 1px solid rgba(124, 155, 202, 0.45);
+            background: transparent;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .sched-act-check:checked {
+            background: #0fc995;
+            border-color: #0fc995;
+        }
+
+        .sched-act-check:checked::after {
+            content: "";
+            position: absolute;
+            left: 5px;
+            top: 1px;
+            width: 4px;
+            height: 9px;
+            border: solid #ffffff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+
+        .sched-time-group {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .sched-time-select {
+            min-width: 52px;
+            height: 28px;
+            padding: 0 8px;
+            border-radius: 6px;
+            border: 1px solid rgba(124, 155, 202, 0.35);
+            background: rgba(255, 255, 255, 0.03);
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 700;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .sched-time-colon {
+            color: #8fb1d8;
+            font-weight: 700;
+            font-size: 14px;
+            display: inline-block;
+            margin: 0 2px;
+        }
+
+        .sched-arrow {
+            color: #a8c0e4;
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .sched-days {
+            display: inline-flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 5px;
+            max-width: 145px;
+        }
+
+        .sched-day {
+            appearance: none;
+            -webkit-appearance: none;
+            min-width: 34px;
+            height: 20px;
+            padding: 0 7px;
+            border-radius: 4px;
+            border: 1px solid rgba(124, 155, 202, 0.12);
+            background: rgba(255, 255, 255, 0.05);
+            color: #8fb1d8;
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 18px;
+            cursor: pointer;
+            transition: 0.15s ease;
+        }
+
+        .sched-day.active {
+            background: rgba(15, 201, 149, 0.16);
+            border-color: rgba(15, 201, 149, 0.45);
+            color: #d8fff4;
+        }
+
+        .sched-popup .pop-foot {
+            padding: 18px 24px 24px 24px;
+            border-top: 1px solid rgba(124, 155, 202, 0.12);
+            display: flex;
+            justify-content: center;
+            gap: 14px;
+        }
+
+        .sched-popup .btn {
+            min-width: 130px;
+            height: 40px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: 0.2s ease;
+        }
+
+        .sched-popup .fill-mint {
+            background: #0fc995;
+            color: #ffffff;
+            border-color: #0fc995;
+        }
+
+        .sched-popup .fill-mint:hover {
+            filter: brightness(1.05);
+        }
+
+        .sched-popup .fill-dark {
+            background: rgba(255, 255, 255, 0.05);
+            color: #d8e6fb;
+            border-color: rgba(124, 155, 202, 0.18);
+        }
+
+        .sched-popup .fill-dark:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+    </style>
 </head>
 <body>
 <div id="wrapper">
@@ -132,8 +407,12 @@ if($_POST['data_update']){
         <div class="contents">
             <div class="container">
                 <div class="manage-wrap">
-                    <div class="list-top justify-content-end">
-                        <div class="btn-area">
+                    <div class="list-top" style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:14px;">
+                        <div class="search-area" style="display:flex; align-items:flex-end; justify-content:flex-start; flex:0 0 auto;">
+                            <?php echo draw_wifi_userid_search_box(); ?>
+                        </div>
+
+                        <div class="btn-area" style="display:flex; align-items:center; justify-content:flex-end; gap:8px; flex:1 1 auto; flex-wrap:wrap;">
                             <?= $controldisplay ?>
                         </div>
                     </div>
@@ -335,83 +614,183 @@ if($_POST['data_update']){
         </div>
     </div>
 </form>
-<form name="crewscheduler" id="crewscheduler" method="post" action="/crew_account.php">
+<!--form name="crewscheduler" id="crewscheduler" method="post" action="/crew_account.php">
     <input type="hidden" name="userid" id="userIdHidden">
+    <input type="hidden" name="schedule_json" id="scheduleJsonHidden">
 
-    <div class="popup layer pop-set-scheduler"
-         style="width:720px; max-width:90%; left:50%; transform:translateX(-50%);">
+    <div class="popup layer pop-set-scheduler sched-popup"
+         style="width:780px; max-width:95%; position:fixed; left:50%; top:50%; transform:translate(-50%, -50%);">
         <div class="pop-head">
             <p class="title">Suspension Setup</p>
         </div>
 
-        <div id="content">
-            <div class="contents" style="padding:15px 20px;">
-                <div class="container">
-                    <div class="manage-wrap">
-                        <div class="list-wrap v1">
-
-                            <div class="sort-area">
-                                <div class="inner">
-                                    <select class="select v1">
-                                        <option value="">Act</option>
-                                        <option value="">From Hour</option>
-                                        <option value="">Minute</option>
-                                        <option value="">To Hour</option>
-                                        <option value="">Minute</option>
-                                        <option value="">Day</option>
-                                    </select>
-                                    <button class="btn-ic btn-sort"></button>
-                                </div>
-                            </div>
-
-                            <table id="scheduleTable"
-                                   style="width:100%; table-layout:fixed; border-collapse:collapse;">
-                                <colgroup>
-                                    <col style="width: 50px;">
-                                    <col style="width: 100px;">
-                                    <col style="width: 100px;">
-                                    <col style="width: 100px;">
-                                    <col style="width: 100px;">
-                                    <col style="width: 200px;">
-                                </colgroup>
-
-                                <thead>
-                                <tr>
-                                    <th style="text-align:center; padding:4px 6px;">Act</th>
-                                    <th style="text-align:center; padding:4px 6px;">From Hour</th>
-                                    <th style="text-align:center; padding:4px 6px;">From Min</th>
-                                    <th style="text-align:center; padding:4px 6px;">To Hour</th>
-                                    <th style="text-align:center; padding:4px 6px;">To Min</th>
-                                    <th style="text-align:center; padding:4px 6px;">Day</th>
-                                </tr>
-                                </thead>
-
-                                <tbody id="sched-body"></tbody>
-                            </table>
-
-                        </div>
-                    </div>
-                </div>
-            </div>
+        <div class="pop-cont sched-modal-body">
+            <table class="sched-setup-table">
+                <thead>
+                <tr>
+                    <th style="width:40px">#</th>
+                    <th style="width:50px">Act</th>
+                    <th>From</th>
+                    <th style="width:30px"></th>
+                    <th>To</th>
+                    <th style="width:200px">Day</th>
+                </tr>
+                </thead>
+                <tbody id="sched-body"></tbody>
+            </table>
         </div>
 
-        <div class="pop-foot" style="text-align:center; padding:10px 0;">
-            <button type="button" class="btn md fill-mint" onclick="submit_crewscheduler()"
-                    style="min-width:120px; margin:0 4px;">
+        <div class="pop-foot sched-modal-footer">
+            <button type="button" class="btn md fill-mint" onclick="submit_crewscheduler()">
                 <i class="ic-submit"></i>APPLY
             </button>
-            <button type="button" class="btn md fill-dark" onclick="popClose('pop-set-scheduler')"
-                    style="min-width:120px; margin:0 4px;">
+            <button type="button" class="btn md fill-dark" onclick="popClose('pop-set-scheduler')">
                 <i class="ic-cancel"></i>CANCEL
             </button>
         </div>
     </div>
+</form-->
+
+<form name="crewscheduler" id="crewscheduler" method="post" action="/crew_account.php">
+    <input type="hidden" name="userid" id="userIdHidden">
+    <input type="hidden" name="schedule_json" id="scheduleJsonHidden">
+
+    <div class="popup layer pop-set-scheduler sched-popup">
+        <div class="pop-head">
+            <p class="title">Suspension Setup</p>
+            <button type="button" class="sched-close" onclick="popClose('pop-set-scheduler')">×</button>
+        </div>
+
+        <div class="pop-cont sched-modal-body">
+            <div class="sched-setup-wrap">
+                <table class="sched-setup-table">
+                    <thead>
+                    <tr>
+                        <th style="width:40px">#</th>
+                        <th style="width:50px">ACT</th>
+                        <th style="width:180px">FROM</th>
+                        <th style="width:30px"></th>
+                        <th style="width:180px">TO</th>
+                        <th style="width:170px">DAY</th>
+                    </tr>
+                    </thead>
+                    <tbody id="sched-body"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="pop-foot sched-modal-footer">
+            <button type="button" class="btn md fill-mint" onclick="submit_crewscheduler()">APPLY</button>
+            <button type="button" class="btn md fill-dark" onclick="popClose('pop-set-scheduler')">CANCEL</button>
+        </div>
+    </div>
 </form>
+
+
 
 </body>
 <script type="text/javascript">
+    (function () {
+        const tbody = document.getElementById('sched-body');
+        const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+        function buildOptions(max) {
+            let html = '';
+            for (let i = 0; i <= max; i++) {
+                const v = String(i).padStart(2, '0');
+                html += `<option value="${v}">${v}</option>`;
+            }
+            return html;
+        }
+
+        function timeSelect(name, max) {
+            return `
+                <select class="sched-time-select" name="${name}">
+                    ${buildOptions(max)}
+                </select>
+            `;
+        }
+
+        function dayButtons(rowIndex) {
+            return `
+                <div class="sched-days">
+                    ${days.map(day => `
+                        <button type="button"
+                                class="sched-day"
+                                data-row="${rowIndex}"
+                                data-day="${day}">
+                            ${day}
+                        </button>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        let rowsHtml = '';
+        for (let i = 1; i <= 3; i++) {
+            rowsHtml += `
+                <tr>
+                    <td><span class="sched-no-badge">${i}</span></td>
+                    <td>
+                        <input type="checkbox" class="sched-act-check" name="act_${i}">
+                    </td>
+                    <td>
+                        <div class="sched-time-group">
+                            ${timeSelect(`from_h_${i}`, 23)}
+                            <span class="sched-time-colon">:</span>
+                            ${timeSelect(`from_m_${i}`, 59)}
+                        </div>
+                    </td>
+                    <td><span class="sched-arrow">→</span></td>
+                    <td>
+                        <div class="sched-time-group">
+                            ${timeSelect(`to_h_${i}`, 23)}
+                            <span class="sched-time-colon">:</span>
+                            ${timeSelect(`to_m_${i}`, 59)}
+                        </div>
+                    </td>
+                    <td>${dayButtons(i)}</td>
+                </tr>
+            `;
+        }
+        tbody.innerHTML = rowsHtml;
+
+        document.addEventListener('click', function (e) {
+            if (e.target.classList.contains('sched-day')) {
+                e.target.classList.toggle('active');
+            }
+        });
+    })();
+
+    function submit_crewscheduler() {
+        const rows = [];
+        const tbodyRows = document.querySelectorAll('#sched-body tr');
+
+        tbodyRows.forEach((tr, idx) => {
+            const rowNo = idx + 1;
+            const active = tr.querySelector(`input[name="act_${rowNo}"]`).checked;
+            const from_h = tr.querySelector(`select[name="from_h_${rowNo}"]`).value;
+            const from_m = tr.querySelector(`select[name="from_m_${rowNo}"]`).value;
+            const to_h = tr.querySelector(`select[name="to_h_${rowNo}"]`).value;
+            const to_m = tr.querySelector(`select[name="to_m_${rowNo}"]`).value;
+
+            const selectedDays = Array.from(tr.querySelectorAll('.sched-day.active'))
+                .map(btn => btn.dataset.day);
+
+            rows.push({
+                row: rowNo,
+                active: active ? 1 : 0,
+                from: `${from_h}:${from_m}`,
+                to: `${to_h}:${to_m}`,
+                days: selectedDays
+            });
+        });
+
+        document.getElementById('scheduleJsonHidden').value = JSON.stringify(rows);
+        document.getElementById('crewscheduler').submit();
+    }
     function confirm_exportCsv() {
-       window.location.href = "crew_account.php?export=csv";
+        window.location.href = "crew_account.php?export=csv";
     }
     function refreshValue() {
         $.ajax({
@@ -481,6 +860,21 @@ if($_POST['data_update']){
         }
         else { return false; }
     }
+    function confirm_setRandomPw(){
+        if(window.confirm('Selected users password would be set to random 6 digits, OK to continue.')){
+            $.ajax({
+                url: "./crew_account.php",
+                data: {setrandompw: "true", userlist: $('input[name="userlist[]"]:checked').map(function(){return $(this).val();}).get()},
+                type: 'POST',
+                success: function (result) {
+                    location.replace("crew_account.php");
+                },
+                error: function (result) {
+                }
+            })
+        }
+        else { return false; }
+    }
     function confirm_resetData(){
         if(window.confirm(`Selected user data usage will be reset, OK to continue.`)){
             $.ajax({
@@ -493,8 +887,8 @@ if($_POST['data_update']){
                 error: function (result) {
                 }
             })
-    }
-    else { return false; }
+        }
+        else { return false; }
     }
     function confirm_delUser(){
         if(window.confirm(`Selected user IDs are being deleted, OK to continue.`)){
@@ -537,7 +931,7 @@ if($_POST['data_update']){
         checkboxes.forEach((checkbox) => {checkbox.checked = selectAll.checked;})
     }
 
-        (function () {
+    (function () {
         function bindPositiveIntOnly(id, allowEmpty) {
             const el = document.getElementById(id);
             if (!el) return;

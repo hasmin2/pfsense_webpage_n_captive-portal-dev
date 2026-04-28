@@ -61,8 +61,6 @@ class APIFreeRADIUSUserCreate extends APIModel {
                     $this->initial_data['freeradius_terminaltype'],
                     $this->initial_data['freeradius_maxtotaloctetstimerange']
                 );
-
-                // ✅ 최종 action()이 반환할 데이터에 넣기
                 $this->bulk_create_mode = true;
                 $this->validated_data['created_count'] = count($returnarray);
                 $this->validated_data['users'] = $returnarray;
@@ -79,8 +77,11 @@ class APIFreeRADIUSUserCreate extends APIModel {
             }
         }
 		else { $this->errors[] = APIResponse\get(5000); }
-		if (!preg_match("/[^a-zA-Z0-9\.\-_]/", $this->initial_data['freeradius_username'])) {
-		# Ensure username is not reserved by the system
+        if (
+            empty($this->initial_data['freeradius_username']) ||
+            preg_match("/^crewpay-/i", $this->initial_data['freeradius_username']) ||
+            preg_match("/[^a-zA-Z0-9\.\-_]/", $this->initial_data['freeradius_username'])
+        ) {		# Ensure username is not reserved by the system
 			if (!$this->is_username_reserved($this->initial_data["freeradius_username"])) {
 			# Ensure username is not longer that 32 characters
 				if (strlen($this->initial_data["freeradius_username"]) <= 32) {
@@ -185,6 +186,7 @@ class APIFreeRADIUSUserCreate extends APIModel {
             "varuserscheckitemsadditionaloptions"=>"",
             "varusersreplyitemsadditionaloptions"=>"",
             "varusersterminaltype"=>"",
+            "varusersprepaidaccount"=>"",
             "varusersresetquota"=>"true",
             "varuserscreatedate"=>"",
 
@@ -220,6 +222,7 @@ class APIFreeRADIUSUserCreate extends APIModel {
                 }
             }
         }
+
         $result['varuserscreatedate'] = date('Y/m/d H:i:s');
         $result["varusersmodified"] = "create";
 		return $result;

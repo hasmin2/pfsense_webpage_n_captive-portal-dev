@@ -23,7 +23,8 @@
  * limitations under the License.
  */
 
-//require_once("ipsec.inc");
+require_once("terminal_status.inc");
+require_once("captiveportal.inc");
 require_once("status_traffic_totals.inc");
 $json_string = '';
 $fd = popen("/usr/local/bin/vnstat --json f 1", "r");
@@ -46,80 +47,7 @@ while (!feof($fd)) {
 pclose($fd);
 $datastring="traffic ";
 global $config;
-$interface = $config['gateways']['gateway_item'];
 $filepath="/etc/inc/";
-////////////////////
-/// VLAN state write
-////////////////////
-$vlandevices=$config['vlan_device']['item'];
-if ($config['vlan_device']['item'] && $vlandevices[0]!==""){
-    $newstate = [];
-    foreach($vlandevices as $vlandevice){
-        mwexec("sh $filepath/vlanstate.sh ".$vlandevice);
-        sleep (1);
-        $handle = fopen($filepath.$vlandevice.".log", "r");
-        if ($handle) {
-            $vlan_state='';
-            $vlan_id='';
-            while (($line = fgets($handle)) !== false) {
-                if(strpos($line,"Ethernet")!==false){
-                    if(strpos($line, 'up')!==false){
-                        $vlan_state.="UP||";
-                    }
-                    else{
-                        $vlan_state.="DN||";
-                    }
-                    $pvidarray = explode( " ", fgets($handle));//next line
-                    if(trim(preg_replace('/\s\s+/', ' ', $pvidarray[4]) ==='')){
-                        $vlan_id.='1||';
-                    }
-                    else{
-                        $vlan_id.=trim(preg_replace('/\s\s+/', ' ', $pvidarray[4])).'||';
-                    }
-                }
-            }
-            fclose($handle);
-        }
-        array_push($newstate, ['id'=>$vlan_id, 'state'=>$vlan_state,'ipaddr'=>$vlandevice]);
-    }
-    if(count($config['vlan_device']['item'])<count($config['vlan_device']['config'])){
-        echo "vlan device removed from shoreside\n";
-        $config['vlan_device']['config']=[""];
-        write_config('vlan_config');
-    }
-    $ischanged=false;
-    foreach($newstate as $eachstate){
-        $devicechanged=true;
-        foreach($config['vlan_device']['config'] as $vlan_device){
-            if($vlan_device['ipaddr']===$eachstate['ipaddr']){
-                $devicechanged=false;
-                if($eachstate['state']!==$vlan_device['state'] || $eachstate['id']!==$vlan_device['id']) {
-                    $ischanged = true;
-                    break;
-                }
-            }
-        }
-        if($ischanged||$devicechanged){
-            break;
-        }
-    }
-    if($ischanged||$devicechanged){
-        $config['vlan_device']['config']=$newstate;
-        echo "vlan state changed\n";
-        write_config('vlan_config');
-    }
-    else {
-        echo "vlan state Not changed\n";
-    }
-}
-else{
-    if(($config['vlan_device']['config'])){
-        echo "No vlan device Found, restting.\n";
-        unset ($config['vlan_device']['config']);
-        write_config('vlan_config');
-    }
-}
-///////////////////
 $timestamp = intdiv(time(), 60);          // epoch minutes
 $timestamp = intdiv($timestamp, 5) * 5;   // 5분 경계로 내림 (분 단위)
 foreach (json_decode($json_string, true)["interfaces"] as $value) {
@@ -178,12 +106,123 @@ $response = curl_exec($ch);
 $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $error = curl_error($ch);
 curl_close($ch);
+$isModified=false;
 
-//sleep (1);
-//write_config("networkusage update");
+$isModified = false;
+
+$interfaces = $config['interfaces'];
+
+$isModified = false;
+
+foreach ($gateways as &$gateway) {
+    $gatewayInterface = $gateway['interface'] ?? '';
+    $terminalType     = $gateway['terminal_type'] ?? '';
+    $gatewayName      = $gateway['name'] ?? '';
+
+    echo "GATEWAYS: " . $gatewayInterface . "\n";
+
+    if (strpos($terminalType, 'vpn') === 0) {
+        echo "Skip VPN gateway: " . $gatewayName . "\n";
+        continue;
+    }
+
+    if ($gatewayInterface === '' || !isset($interfaces[$gatewayInterface])) {
+        echo "No matched interface: " . $gatewayInterface . "\n";
+        continue;
+    }
+
+    $details = $interfaces[$gatewayInterface];
+
+    echo "INTERFACES: " . $gatewayInterface . "\n";
+
+    if (empty($details['if'])) {
+        echo "No root interface for: " . $gatewayInterface . "\n";
+        continue;
+    }
+
+    $rootIf = $details['if'];
+    $gateway['rootinterface'] = $rootIf;
+
+    if (!isset($gateway['allowance']) || $gateway['allowance'] === '') {
+        echo "No allowance set for gateway: " . $gatewayName . "\n";
+        continue;
+    }
+
+    $usage     = get_datausage_from_db($rootIf);
+    $allowance = (float)$gateway['allowance'];
+
+    $needShutdown = ((float)$usage >= $allowance);
+
+    if ($needShutdown) {
+        echo "gateway shutdown start: " . $gatewayName . "\n";
+
+        if (captiveportal_add_shutdown_gateway($gatewayName)) {
+            echo "shutdown gateway added: " . $gatewayName . "\n";
+            $isModified = true;
+        } else {
+            echo "shutdown gateway already exists: " . $gatewayName . "\n";
+        }
+
+    } else {
+        echo "gateway turnon start: " . $gatewayName . "\n";
+
+        if (captiveportal_remove_shutdown_gateway($gatewayName)) {
+            echo "shutdown gateway removed: " . $gatewayName . "\n";
+            $isModified = true;
+        } else {
+            echo "shutdown gateway not found: " . $gatewayName . "\n";
+        }
+    }
+}
+
+unset($gateway);
+
+if ($isModified) {
+    echo "shutdown gateway applied: " . $gatewayName . "\n";
+    write_config("Update captiveportal shutdown gateway list");
+}
+function captiveportal_add_shutdown_gateway(string $gatewayName): bool
+{
+    global $config;
+    $gatewayNameString = $config['captiveportal']['shutdown_gateways'];
+    if (strpos($gatewayNameString, $gatewayName . "||") !== false) {
+        return false;
+    }
+    else
+        $gatewayNameString .= $gatewayName . "||";{
+
+    }
+    $config['captiveportal']['shutdown_gateways'] = $gatewayNameString;
+
+    return true;
+}
 
 
-function send_api($url, $method, $postdata) {
+function captiveportal_remove_shutdown_gateway(string $gatewayName): bool
+{
+    global $config;
+
+    $gatewayName = trim($gatewayName);
+
+    if ($gatewayName === '') {
+        return false;
+    }
+
+    if (!isset($config['captiveportal']['shutdown_gateways']) ||
+        !is_array($config['captiveportal']['shutdown_gateways'])) {
+        return false;
+    }
+
+    if (!isset($config['captiveportal']['shutdown_gateways'][$gatewayName])) {
+        return false;
+    }
+
+    unset($config['captiveportal']['shutdown_gateways'][$gatewayName]);
+
+    return true;
+}
+
+/*function send_api($url, $method, $postdata) {
     $ch = curl_init();
     curl_setopt_array($ch, array(
         CURLOPT_URL => $url,
@@ -204,7 +243,7 @@ function send_api($url, $method, $postdata) {
     $error = curl_error($ch);
     curl_close($ch);
     return array($response, $code);
-}
+}*/
 
 function get_module_status(){
     $pipelines_result = send_api('http://192.168.209.210:18630/rest/v1/pipelines', 'GET', '');

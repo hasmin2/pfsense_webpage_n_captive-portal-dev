@@ -25,7 +25,6 @@ foreach ($config["installedpackages"]["freeradius"]["config"] as $item=>$userent
        && strtolower($config["installedpackages"]["freeradius"]["config"][$item]['varusershalftimeperiod']) === ''){
         $config['installedpackages']['freeradius']['config'][$item]['varusersresetquota'] = "true";
         $config['installedpackages']['freeradius']['config'][$item]['varusersmodified'] = "update";
-        //captiveportal_syslog("Reset Datausage for".$userentry['varusersusername']);
     }
 }
 

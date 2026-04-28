@@ -10,5 +10,5 @@
   printf "show interface | include line protocol | PVID\r"
   sleep 1
 ) | telnet "$1"
-' _ "$1" > "$1.log" 2>&1
+' _ "$1" > "/etc/inc/$1.log" 2>&1
 
