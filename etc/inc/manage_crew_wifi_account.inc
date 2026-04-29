@@ -676,101 +676,199 @@ function get_scheduler($user){
     return $result;
 }
 
-function set_scheduler($userid, $schedule) {
+function set_scheduler($userid, $schedule)
+{
     global $config;
 
-    if (!isset($config["schedules"]["schedule"]) || !is_array($config["schedules"]["schedule"])) {
-        $config["schedules"]["schedule"] = [];
-    }
+    $userid = trim((string)$userid);
 
-    $schdIndex = -1;
-    foreach ($config["schedules"]["schedule"] as $index => $eachSchedule) {
-        if (($eachSchedule['name'] ?? '') === (string)$userid) {
-            $schdIndex = $index;
-            break;
-        }
+    if ($userid === '') {
+        return false;
     }
-
-    $scheduledItemList = [
-        'name'      => (string)$userid,
-        'descr'     => '',
-        'timerange' => []
-    ];
 
     if (!is_array($schedule)) {
         $schedule = [];
     }
 
-    foreach ($schedule as $item) {
-        if (!is_array($item)) {
-            continue;
+    /*
+     * 요일 변환표
+     * pfSense 저장용:
+     * 일요일 0 ~ 토요일 6
+     */
+    $dayMap = [
+        'sun' => '0',
+        'mon' => '1',
+        'tue' => '2',
+        'wed' => '3',
+        'thu' => '4',
+        'fri' => '5',
+        'sat' => '6',
+    ];
+
+    /*
+     * 1. POST flat 배열을 scheduler row 배열로 변환
+     *
+     * 현재 POST:
+     * from_hour_0, from_min_0, to_hour_0, to_min_0, day_0
+     */
+    $normalizedSchedule = [];
+
+    for ($i = 0; $i < 3; $i++) {
+        $fromHour = $schedule['from_hour_' . $i] ?? '00';
+        $fromMin  = $schedule['from_min_' . $i] ?? '00';
+        $toHour   = $schedule['to_hour_' . $i] ?? '00';
+        $toMin    = $schedule['to_min_' . $i] ?? '00';
+
+        $fromHour = sprintf('%02d', max(0, min(23, (int)$fromHour)));
+        $fromMin  = sprintf('%02d', max(0, min(59, (int)$fromMin)));
+        $toHour   = sprintf('%02d', max(0, min(23, (int)$toHour)));
+        $toMin    = sprintf('%02d', max(0, min(59, (int)$toMin)));
+
+        $days = $schedule['day_' . $i] ?? [];
+
+        if ($days === '') {
+            $days = [];
         }
 
-        if (isset($item['userid']) || isset($item['id'])) {
-            continue;
+        if (!is_array($days)) {
+            $days = [$days];
         }
 
-        $enabled = false;
-        if (array_key_exists('enabled', $item)) {
-            $enabled = filter_var($item['enabled'], FILTER_VALIDATE_BOOLEAN);
-        } elseif (array_key_exists('active', $item)) {
-            $enabled = in_array((string)$item['active'], ['1', 'true', 'TRUE'], true);
-        }
+        /*
+         * 요일 문자열을 숫자로 변환
+         * sun -> 0
+         * mon -> 1
+         * tue -> 2
+         * wed -> 3
+         * thu -> 4
+         * fri -> 5
+         * sat -> 6
+         */
+        $convertedDays = [];
 
-        if (!empty($item['from']) && strpos((string)$item['from'], ':') !== false) {
-            $from = trim((string)$item['from']);
-        } else {
-            $fh = str_pad((string)($item['from_hour'] ?? '00'), 2, '0', STR_PAD_LEFT);
-            $fm = str_pad((string)($item['from_min'] ?? '00'), 2, '0', STR_PAD_LEFT);
-            $from = $fh . ':' . $fm;
-        }
+        foreach ($days as $day) {
+            $day = strtolower(trim((string)$day));
 
-        if (!empty($item['to']) && strpos((string)$item['to'], ':') !== false) {
-            $to = trim((string)$item['to']);
-        } else {
-            $th = str_pad((string)($item['to_hour'] ?? '00'), 2, '0', STR_PAD_LEFT);
-            $tm = str_pad((string)($item['to_min'] ?? '00'), 2, '0', STR_PAD_LEFT);
-            $to = $th . ':' . $tm;
-        }
-
-        $dayMap = [
-            'sun' => '0',
-            'mon' => '1',
-            'tue' => '2',
-            'wed' => '3',
-            'thu' => '4',
-            'fri' => '5',
-            'sat' => '6',
-        ];
-
-        $days = [];
-        if (isset($item['days']) && is_array($item['days'])) {
-            foreach ($item['days'] as $day) {
-                $day = strtolower(trim((string)$day));
-                if ($day !== '' && isset($dayMap[$day])) {
-                    $days[] = $dayMap[$day];
-                }
+            if (isset($dayMap[$day])) {
+                $convertedDays[] = $dayMap[$day];
+                continue;
             }
-            $days = array_values(array_unique($days));
+
+            /*
+             * 혹시 이미 숫자값으로 넘어온 경우도 허용
+             */
+            if (preg_match('/^[0-6]$/', $day)) {
+                $convertedDays[] = $day;
+            }
         }
 
+        /*
+         * 중복 제거 후 순서 정렬
+         */
+        $convertedDays = array_values(array_unique($convertedDays));
+        sort($convertedDays, SORT_NUMERIC);
+
+        $normalizedSchedule[] = [
+            'active' => isset($schedule['act_' . $i]) ? 1 : 0,
+            'from'   => $fromHour . ':' . $fromMin,
+            'to'     => $toHour . ':' . $toMin,
+            'days'   => $convertedDays,
+        ];
+    }
+
+    /*
+     * 2. config schedules 구조 보정
+     * 여기서 기존 config 값이 문자열이면 배열로 초기화
+     */
+    if (!isset($config) || !is_array($config)) {
+        $config = [];
+    }
+
+    if (!isset($config['schedules']) || !is_array($config['schedules'])) {
+        $config['schedules'] = [];
+    }
+
+    if (!isset($config['schedules']['schedule']) || !is_array($config['schedules']['schedule'])) {
+        $config['schedules']['schedule'] = [];
+    }
+
+    /*
+     * pfSense config에서 schedule이 단일 associative array로 들어간 경우 보정
+     */
+    if (isset($config['schedules']['schedule']['name'])) {
+        $config['schedules']['schedule'] = [
+            $config['schedules']['schedule']
+        ];
+    }
+
+    /*
+     * 3. 기존 동일 name schedule 제거
+     * 문자열/깨진 항목은 건너뜀
+     */
+    $scheduleList = [];
+
+    foreach ($config['schedules']['schedule'] as $schd) {
+        if (!is_array($schd)) {
+            continue;
+        }
+
+        if (($schd['name'] ?? '') === $userid) {
+            continue;
+        }
+
+        $scheduleList[] = $schd;
+    }
+
+    /*
+     * 4. 새 schedule 생성
+     */
+    $scheduledItemList = [
+        'name'      => $userid,
+        'descr'     => '',
+        'timerange' => []
+    ];
+
+    foreach ($normalizedSchedule as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $enabled = !empty($row['active']);
+        $from    = $row['from'] ?? '00:00';
+        $to      = $row['to'] ?? '00:00';
+
+        $days = $row['days'] ?? [];
+
+        if (!is_array($days)) {
+            $days = [$days];
+        }
+
+        /*
+         * position에는 숫자 요일값 저장
+         * 예:
+         * 일,월,화 선택 시 0,1,2
+         */
         $timerange = [
             'rangedescr' => $enabled ? 'TRUE' : 'FALSE',
             'hour'       => $from . '-' . $to,
-            'position'   => implode(",", $days),
+            'position'   => implode(',', $days),
         ];
 
         $scheduledItemList['timerange'][] = $timerange;
     }
 
-    if ($schdIndex >= 0) {
-        $config["schedules"]["schedule"][$schdIndex] = $scheduledItemList;
-    } else {
-        $config["schedules"]["schedule"][] = $scheduledItemList;
-    }
+    /*
+     * 5. 새 schedule 추가 후 저장
+     */
+    $scheduleList[] = $scheduledItemList;
+
+    $config['schedules']['schedule'] = $scheduleList;
 
     write_config('Update/write ' . $userid . ' schedule');
+
+    return true;
 }
+
 
 function check_wifi_account_password(){
     global $config;

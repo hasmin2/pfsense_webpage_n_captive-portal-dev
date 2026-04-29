@@ -1808,8 +1808,21 @@ function captiveportal_authenticate_user(&$login = '', &$password = '', $clientm
                     if ($authcfg['type'] === 'none') {
                         $result = true;
                     } else {
-                        $result = authenticate_user($login, $password, $authcfg, $attributes);
-                        //captiveportal_logportalauth($login, $password, $clientmac, $pipeno, "exiting user_auth stage result : $result");
+                        $result=false;
+                        $antenna_allowed = antenna_allowed($login);
+                        $isPortalShutdown = false;
+                        $schedule_suspended = false;
+                        if (isset($config['captiveportal'][$cpzone]['terminate_duration'])){
+                            if(strpos( $login, '00001') === false) {
+                                $isPortalShutdown=true;
+                            }
+                        }
+                        if(get_suspend_timeschedule($login)) {
+                            $schedule_suspended = true;
+                        }
+                        if($antenna_allowed && !$isPortalShutdown && !$schedule_suspended) {
+                            $result = authenticate_user($login, $password, $authcfg, $attributes);
+                        }
                     }
 
                     if (!empty($attributes['error_message'])) {
@@ -1841,31 +1854,9 @@ function captiveportal_authenticate_user(&$login = '', &$password = '', $clientm
                     }
                 }
                 // We determine a flag
-                $antenna_allowed = antenna_allowed($login);
-                if ($result === true && $antenna_allowed=== true) {
-                    $val = 3;
-                    if (isset($config['captiveportal'][$cpzone]['terminate_duration'])){
-                        if(strpos( $login, '00001') === false) {
-                            $result = false;
-                            $date = new DateTime();
-                            $timeduration = $config['captiveportal'][$cpzone]['terminate_timestamp'] + $config['captiveportal'][$cpzone]['terminate_duration'] - round($date->getTimestamp() / 60, 0);
-                            if($timeduration>10000){
-                                $msg = "Portal has shutdown by ADMIN until ADMIN back system on.";
-                            }
-                            else {
-                                $msg = "Portal has shutdown by ADMIN, wait for " . $timeduration . " minutes.";
-                            }
-                        }
-                    }
-                    $schedule_suspended = get_suspend_timeschedule($login);
-                    if($schedule_suspended == true) {
-                        captiveportal_syslog($schedule_suspended);
-                    }
 
-                    if($schedule_suspended == true){
-                        $result = false;
-                        $msg = "Your ID has been suspended by admin schedule policy.";
-                    }
+                if ($result === true) {
+                    $val = 3;
                 }
                 else if ($result===true && $antenna_allowed){
                     $val = 2;
@@ -1886,7 +1877,24 @@ function captiveportal_authenticate_user(&$login = '', &$password = '', $clientm
                     else if ($attributes['ms_chap2_success']||$attributes['ms_chap_success']){
                         $msg="You have reached maximum data usage.";
                     }
-                    else {
+                    else if (!$antenna_allowed){
+                        $msg = "The antenna has been disabled due to the main policy";
+                    }
+                    else if ($isPortalShutdown){
+                        $date = new DateTime();
+                        $timeduration = $config['captiveportal'][$cpzone]['terminate_timestamp'] + $config['captiveportal'][$cpzone]['terminate_duration'] - round($date->getTimestamp() / 60, 0);
+                        if($timeduration>10000){
+                            $msg = "Portal has shutdown by ADMIN until ADMIN back system on.";
+                        }
+                        else {
+                            $msg = "Portal has shutdown by ADMIN, wait for " . $timeduration . " minutes.";
+                        }
+                    }
+                    else if ($schedule_suspended){
+                        $msg = "Your ID has been suspended by admin schedule policy.";
+                        captiveportal_syslog("$login has been suspended due to schedule");
+                    }
+                    else  {
                         $msg.="Unknown error, contact administrator : ".$result. $status;
                     }
                 } elseif ($result === null) {

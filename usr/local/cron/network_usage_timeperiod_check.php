@@ -178,25 +178,39 @@ foreach ($gateways as &$gateway) {
 unset($gateway);
 
 if ($isModified) {
+    $cpzone='crew';
+    $cpzoneid = $config['captiveportal']['crew']['zoneid'];
     echo "shutdown gateway applied: " . $gatewayName . "\n";
+    captiveportal_disconnect_all($term_cause = 6, $logoutReason = "DISCONNECT", $carp_loop = false);
     write_config("Update captiveportal shutdown gateway list");
 }
 function captiveportal_add_shutdown_gateway(string $gatewayName): bool
 {
     global $config;
+
+    $gatewayName = trim($gatewayName);
+
+    if ($gatewayName === '') {
+        return false;
+    }
+
+    if (!isset($config['captiveportal']['shutdown_gateways']) ||
+        !is_string($config['captiveportal']['shutdown_gateways'])) {
+        $config['captiveportal']['shutdown_gateways'] = '';
+    }
+
     $gatewayNameString = $config['captiveportal']['shutdown_gateways'];
+
     if (strpos($gatewayNameString, $gatewayName . "||") !== false) {
         return false;
     }
-    else
-        $gatewayNameString .= $gatewayName . "||";{
 
-    }
+    $gatewayNameString .= $gatewayName . "||";
+
     $config['captiveportal']['shutdown_gateways'] = $gatewayNameString;
 
     return true;
 }
-
 
 function captiveportal_remove_shutdown_gateway(string $gatewayName): bool
 {
@@ -209,19 +223,31 @@ function captiveportal_remove_shutdown_gateway(string $gatewayName): bool
     }
 
     if (!isset($config['captiveportal']['shutdown_gateways']) ||
-        !is_array($config['captiveportal']['shutdown_gateways'])) {
+        !is_string($config['captiveportal']['shutdown_gateways'])) {
         return false;
     }
 
-    if (!isset($config['captiveportal']['shutdown_gateways'][$gatewayName])) {
+    $gatewayList = explode('||', $config['captiveportal']['shutdown_gateways']);
+
+    // 빈 값 제거
+    $gatewayList = array_filter($gatewayList, function ($value) {
+        return trim($value) !== '';
+    });
+
+    if (!in_array($gatewayName, $gatewayList, true)) {
         return false;
     }
 
-    unset($config['captiveportal']['shutdown_gateways'][$gatewayName]);
+    $gatewayList = array_filter($gatewayList, function ($value) use ($gatewayName) {
+        return $value !== $gatewayName;
+    });
+
+    $config['captiveportal']['shutdown_gateways'] = empty($gatewayList)
+        ? ''
+        : implode('||', $gatewayList) . '||';
 
     return true;
 }
-
 /*function send_api($url, $method, $postdata) {
     $ch = curl_init();
     curl_setopt_array($ch, array(

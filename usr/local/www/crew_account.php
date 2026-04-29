@@ -37,17 +37,103 @@ if (isset($cpzone) && !empty($cpzone) && isset($a_cp[$cpzone]['zoneid'])) {
 if (($_GET['act'] == "del") && !empty($cpzone)) {
     captiveportal_disconnect_client($_GET['id'], 6);
 }
-if (!empty($_POST['schedule_json']) && !empty($_POST['userid'])) {
-    $userid = $_POST['userid'];
-    $schedule = json_decode($_POST['schedule_json'], true);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['userid'], $_POST['schedule_json'])) {
+    $userid = trim((string)($_POST['userid'] ?? ''));
 
-    if (!is_array($schedule)) {
-        $schedule = [];
+    if ($userid !== '') {
+        $decoded = json_decode((string)$_POST['schedule_json'], true);
+
+        if (is_array($decoded)) {
+            $schedulePost = [];
+
+            /*
+             * schedule_json 구조 예:
+             * [
+             *   {"userid":"crewpay-Sktl00700"},
+             *   {"active":1,"from_hour":"00","from_min":"30","to_hour":"13","to_min":"00","days":["wed","thu"]},
+             *   ...
+             * ]
+             *
+             * userid 객체는 건너뛰고, active/from_hour가 있는 row만 처리
+             */
+            $rowIndex = 0;
+
+            foreach ($decoded as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                if (!array_key_exists('from_hour', $row) && !array_key_exists('from', $row)) {
+                    continue;
+                }
+
+                if ($rowIndex >= 3) {
+                    break;
+                }
+
+                $active = !empty($row['active']);
+
+                if ($active) {
+                    $schedulePost['act_' . $rowIndex] = 'on';
+                }
+
+                /*
+                 * 현재 schedule_json이 from_hour/from_min 형태인 경우
+                 */
+                if (isset($row['from_hour'], $row['from_min'], $row['to_hour'], $row['to_min'])) {
+                    $schedulePost['from_hour_' . $rowIndex] = $row['from_hour'];
+                    $schedulePost['from_min_' . $rowIndex]  = $row['from_min'];
+                    $schedulePost['to_hour_' . $rowIndex]   = $row['to_hour'];
+                    $schedulePost['to_min_' . $rowIndex]    = $row['to_min'];
+                }
+                /*
+                 * 혹시 from:"00:30", to:"13:00" 형태인 경우도 처리
+                 */
+                else {
+                    $from = explode(':', (string)($row['from'] ?? '00:00'));
+                    $to   = explode(':', (string)($row['to'] ?? '00:00'));
+
+                    $schedulePost['from_hour_' . $rowIndex] = $from[0] ?? '00';
+                    $schedulePost['from_min_' . $rowIndex]  = $from[1] ?? '00';
+                    $schedulePost['to_hour_' . $rowIndex]   = $to[0] ?? '00';
+                    $schedulePost['to_min_' . $rowIndex]    = $to[1] ?? '00';
+                }
+
+                /*
+                 * 핵심:
+                 * 여기서 day_0을 배열로 강제 구성
+                 */
+                $days = $row['days'] ?? [];
+
+                if (!is_array($days)) {
+                    $days = [$days];
+                }
+
+                $schedulePost['day_' . $rowIndex] = array_values($days);
+
+                $rowIndex++;
+            }
+
+            /*
+             * 3줄 미만이면 기본값 채움
+             */
+            for ($i = $rowIndex; $i < 3; $i++) {
+                $schedulePost['from_hour_' . $i] = '00';
+                $schedulePost['from_min_' . $i]  = '00';
+                $schedulePost['to_hour_' . $i]   = '12';
+                $schedulePost['to_min_' . $i]    = '00';
+                $schedulePost['day_' . $i]       = [];
+            }
+
+            set_scheduler($userid, $schedulePost);
+
+            echo '<script> location.replace("crew_account_processing.php");</script>';
+            exit;
+        }
     }
-    set_scheduler($userid, $schedule);
-    header("Location: crew_account_processing.php");
-    exit;
 }
+
+
 if ($_POST['description'] && $_POST['userid']) {
     $description=$_POST['description'];
     $userid=$_POST['userid'];
@@ -96,8 +182,52 @@ if ($_POST['dataamount']){
 <head>
     <?php echo print_css_n_head();?>
     <style>
-        /* ===== Scheduler Popup UI ===== */
-        .sched-popup .pop-cont {
+        .sched-popup {
+            width: 780px;
+            max-width: 95vw;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.2);
+            overflow: hidden;
+            position: fixed;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 9999;
+        }
+
+        .sched-popup .pop-head {
+            background: #2b3035;
+            color: #fff;
+            padding: 16px 24px;
+            font-size: 17px;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .sched-popup .pop-head .title {
+            margin: 0;
+            color: #fff;
+            font-size: 17px;
+            font-weight: 600;
+        }
+
+        .sched-close {
+            background: none;
+            border: none;
+            color: #adb5bd;
+            font-size: 22px;
+            cursor: pointer;
+            line-height: 1;
+        }
+
+        .sched-close:hover {
+            color: #fff;
+        }
+
+        .sched-modal-body {
             padding: 20px 24px;
             overflow-x: auto;
         }
@@ -108,7 +238,7 @@ if ($_POST['dataamount']){
             border: 1px solid #dee2e6;
             border-radius: 8px;
             overflow: hidden;
-            table-layout: fixed;
+            background: #fff;
         }
 
         .sched-setup-table th {
@@ -137,254 +267,225 @@ if ($_POST['dataamount']){
         .sched-setup-table tr:hover {
             background: #f8f9fa;
         }
-        <style>
-         .sched-popup {
-             width: 780px;
-             max-width: 95%;
-             position: fixed;
-             left: 50%;
-             top: 50%;
-             transform: translate(-50%, -50%);
-             background: #071630;
-             border-radius: 24px;
-             box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
-             border: 1px solid rgba(130, 160, 210, 0.18);
-             overflow: hidden;
-             color: #ffffff;
-             font-family: Arial, Helvetica, sans-serif;
-             z-index: 9999;
-         }
 
-        .sched-popup .pop-head {
-            position: relative;
-            padding: 22px 28px 10px 28px;
-        }
-
-        .sched-popup .pop-head .title {
-            margin: 0;
-            font-size: 28px;
-            font-weight: 700;
-            line-height: 1.2;
-            color: #ffffff;
-        }
-
-        .sched-popup .pop-head .subtitle {
-            margin: 6px 0 0 0;
-            font-size: 16px;
-            color: #8fb1d8;
-            font-weight: 500;
-        }
-
-        .sched-popup .sched-close {
-            position: absolute;
-            right: 18px;
-            top: 18px;
-            width: 44px;
-            height: 44px;
-            border-radius: 50%;
-            border: 1px solid rgba(153, 180, 220, 0.16);
-            background: rgba(255, 255, 255, 0.06);
-            color: #a9bddb;
-            font-size: 24px;
-            line-height: 42px;
-            text-align: center;
-            cursor: pointer;
-            transition: 0.2s ease;
-        }
-
-        .sched-popup .sched-close:hover {
-            background: rgba(255, 255, 255, 0.1);
-        }
-
-        .sched-popup .pop-cont {
-            padding: 18px 20px 18px 20px;
-        }
-
-        .sched-setup-wrap {
-            border: 1px solid rgba(124, 155, 202, 0.18);
-            border-radius: 10px;
-            overflow: hidden;
-            background: rgba(6, 20, 44, 0.35);
-        }
-
-        .sched-setup-table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-        }
-
-        .sched-setup-table thead th {
-            height: 48px;
-            padding: 0 10px;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
-            color: #8fb1d8;
-            background: rgba(255, 255, 255, 0.02);
-            border-bottom: 1px solid rgba(124, 155, 202, 0.16);
-            text-align: center;
-        }
-
-        .sched-setup-table tbody tr {
-            border-bottom: 1px solid rgba(124, 155, 202, 0.12);
-        }
-
-        .sched-setup-table tbody tr:last-child {
-            border-bottom: 0;
-        }
-
-        .sched-setup-table tbody td {
-            height: 62px;
-            padding: 0 10px;
-            text-align: center;
-            vertical-align: middle;
-        }
-
-        .sched-no-badge {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
+        .sched-row-num {
+            display: inline-block;
             width: 22px;
             height: 22px;
+            line-height: 22px;
+            background: #e9ecef;
+            color: #6c757d;
             border-radius: 4px;
-            background: rgba(255, 255, 255, 0.08);
-            color: #8fb1d8;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 700;
+            text-align: center;
         }
 
-        .sched-act-check {
-            appearance: none;
-            -webkit-appearance: none;
+        .sched-act-checkbox {
             width: 18px;
             height: 18px;
-            border-radius: 5px;
-            border: 1px solid rgba(124, 155, 202, 0.45);
-            background: transparent;
+            accent-color: #2ecc71;
             cursor: pointer;
-            position: relative;
-        }
-
-        .sched-act-check:checked {
-            background: #0fc995;
-            border-color: #0fc995;
-        }
-
-        .sched-act-check:checked::after {
-            content: "";
-            position: absolute;
-            left: 5px;
-            top: 1px;
-            width: 4px;
-            height: 9px;
-            border: solid #ffffff;
-            border-width: 0 2px 2px 0;
-            transform: rotate(45deg);
         }
 
         .sched-time-group {
             display: inline-flex;
             align-items: center;
-            gap: 6px;
+            gap: 4px;
         }
 
         .sched-time-select {
-            min-width: 52px;
-            height: 28px;
-            padding: 0 8px;
+            border: 1.5px solid #dee2e6;
             border-radius: 6px;
-            border: 1px solid rgba(124, 155, 202, 0.35);
-            background: rgba(255, 255, 255, 0.03);
-            color: #ffffff;
+            padding: 6px 8px;
             font-size: 14px;
-            font-weight: 700;
-            outline: none;
+            font-weight: 500;
+            color: #343a40;
+            width: 68px;
+            text-align: center;
             cursor: pointer;
+            background: #fff;
+        }
+
+        .sched-time-select:focus {
+            outline: none;
+            border-color: #2ecc71;
+            box-shadow: 0 0 0 2px rgba(46,204,113,0.15);
         }
 
         .sched-time-colon {
-            color: #8fb1d8;
             font-weight: 700;
-            font-size: 14px;
-            display: inline-block;
-            margin: 0 2px;
+            color: #6c757d;
+            font-size: 15px;
         }
 
-        .sched-arrow {
-            color: #a8c0e4;
+        .sched-arrow-cell {
+            color: #adb5bd;
             font-size: 18px;
-            font-weight: 700;
         }
 
-        .sched-days {
+        .sched-day-chips {
             display: inline-flex;
             flex-wrap: wrap;
+            gap: 4px;
             justify-content: center;
-            gap: 5px;
-            max-width: 145px;
+            max-width: 210px;
+        }
+
+        .sched-day-chip input {
+            display: none;
+        }
+
+        .sched-day-chip label {
+            display: block;
+            padding: 3px 9px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #6c757d;
+            background: #f1f3f5;
+            border: 1.5px solid transparent;
+            border-radius: 5px;
+            cursor: pointer;
+            user-select: none;
+            line-height: 1.4;
+        }
+
+        .sched-day-chip label:hover {
+            background: #e9ecef;
+            color: #495057;
+        }
+
+        .sched-day-chip input:checked + label {
+            background: #d5f5e3;
+            color: #27ae60;
+            border-color: #2ecc71;
+        }
+
+        .sched-modal-footer {
+            padding: 14px 24px 20px;
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            border-top: 1px solid #dee2e6;
+        }
+
+        .sched-modal-footer .btn {
+            padding: 9px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            letter-spacing: 0.3px;
+        }
+
+        .sched-modal-footer .fill-mint {
+            background: #2ecc71;
+            color: #fff;
+        }
+
+        .sched-modal-footer .fill-mint:hover {
+            background: #27ae60;
+        }
+
+        .sched-modal-footer .fill-dark {
+            background: #e9ecef;
+            color: #495057;
+            border: 1px solid #dee2e6;
+        }
+
+        .sched-modal-footer .fill-dark:hover {
+            background: #dee2e6;
+        }
+        .sched-act-check {
+            display: inline-block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+
+            width: 18px !important;
+            height: 18px !important;
+
+            appearance: checkbox !important;
+            -webkit-appearance: checkbox !important;
+
+            accent-color: #2ecc71;
+            cursor: pointer;
+            position: static !important;
+            margin: 0 !important;
+        }
+
+        .sched-time-select {
+            display: inline-block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+
+            width: 68px !important;
+            height: 31px !important;
+
+            border: 1.5px solid #dee2e6 !important;
+            border-radius: 6px !important;
+
+            padding: 4px 8px !important;
+            background: #fff !important;
+            color: #343a40 !important;
+
+            font-size: 14px !important;
+            font-weight: 500 !important;
+            line-height: normal !important;
+            text-align: center !important;
+
+            appearance: auto !important;
+            -webkit-appearance: menulist !important;
+        }
+
+        .sched-time-select option {
+            color: #343a40 !important;
+            background: #fff !important;
+        }
+
+        .sched-time-group {
+            display: inline-flex !important;
+            align-items: center !important;
+            gap: 4px !important;
+        }
+
+        .sched-time-colon {
+            color: #6c757d !important;
+            font-weight: 700 !important;
+            font-size: 15px !important;
         }
 
         .sched-day {
-            appearance: none;
-            -webkit-appearance: none;
-            min-width: 34px;
-            height: 20px;
-            padding: 0 7px;
-            border-radius: 4px;
-            border: 1px solid rgba(124, 155, 202, 0.12);
-            background: rgba(255, 255, 255, 0.05);
-            color: #8fb1d8;
-            font-size: 10px;
-            font-weight: 700;
-            line-height: 18px;
-            cursor: pointer;
-            transition: 0.15s ease;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+
+            min-width: 34px !important;
+            height: 24px !important;
+
+            padding: 3px 8px !important;
+            border: 1.5px solid transparent !important;
+            border-radius: 5px !important;
+
+            background: #f1f3f5 !important;
+            color: #6c757d !important;
+
+            font-size: 11px !important;
+            font-weight: 600 !important;
+            cursor: pointer !important;
+
+            appearance: none !important;
+            -webkit-appearance: none !important;
         }
 
-        .sched-day.active {
-            background: rgba(15, 201, 149, 0.16);
-            border-color: rgba(15, 201, 149, 0.45);
-            color: #d8fff4;
+        .sched-day-check {
+            display: none !important;
         }
 
-        .sched-popup .pop-foot {
-            padding: 18px 24px 24px 24px;
-            border-top: 1px solid rgba(124, 155, 202, 0.12);
-            display: flex;
-            justify-content: center;
-            gap: 14px;
-        }
-
-        .sched-popup .btn {
-            min-width: 130px;
-            height: 40px;
-            border-radius: 8px;
-            border: 1px solid transparent;
-            font-size: 14px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: 0.2s ease;
-        }
-
-        .sched-popup .fill-mint {
-            background: #0fc995;
-            color: #ffffff;
-            border-color: #0fc995;
-        }
-
-        .sched-popup .fill-mint:hover {
-            filter: brightness(1.05);
-        }
-
-        .sched-popup .fill-dark {
-            background: rgba(255, 255, 255, 0.05);
-            color: #d8e6fb;
-            border-color: rgba(124, 155, 202, 0.18);
-        }
-
-        .sched-popup .fill-dark:hover {
-            background: rgba(255, 255, 255, 0.08);
+        .sched-day-check:checked + .sched-day {
+            background: #d5f5e3 !important;
+            color: #27ae60 !important;
+            border-color: #2ecc71 !important;
         }
     </style>
 </head>
@@ -614,42 +715,6 @@ if ($_POST['dataamount']){
         </div>
     </div>
 </form>
-<!--form name="crewscheduler" id="crewscheduler" method="post" action="/crew_account.php">
-    <input type="hidden" name="userid" id="userIdHidden">
-    <input type="hidden" name="schedule_json" id="scheduleJsonHidden">
-
-    <div class="popup layer pop-set-scheduler sched-popup"
-         style="width:780px; max-width:95%; position:fixed; left:50%; top:50%; transform:translate(-50%, -50%);">
-        <div class="pop-head">
-            <p class="title">Suspension Setup</p>
-        </div>
-
-        <div class="pop-cont sched-modal-body">
-            <table class="sched-setup-table">
-                <thead>
-                <tr>
-                    <th style="width:40px">#</th>
-                    <th style="width:50px">Act</th>
-                    <th>From</th>
-                    <th style="width:30px"></th>
-                    <th>To</th>
-                    <th style="width:200px">Day</th>
-                </tr>
-                </thead>
-                <tbody id="sched-body"></tbody>
-            </table>
-        </div>
-
-        <div class="pop-foot sched-modal-footer">
-            <button type="button" class="btn md fill-mint" onclick="submit_crewscheduler()">
-                <i class="ic-submit"></i>APPLY
-            </button>
-            <button type="button" class="btn md fill-dark" onclick="popClose('pop-set-scheduler')">
-                <i class="ic-cancel"></i>CANCEL
-            </button>
-        </div>
-    </div>
-</form-->
 
 <form name="crewscheduler" id="crewscheduler" method="post" action="/crew_account.php">
     <input type="hidden" name="userid" id="userIdHidden">
@@ -662,21 +727,19 @@ if ($_POST['dataamount']){
         </div>
 
         <div class="pop-cont sched-modal-body">
-            <div class="sched-setup-wrap">
-                <table class="sched-setup-table">
-                    <thead>
-                    <tr>
-                        <th style="width:40px">#</th>
-                        <th style="width:50px">ACT</th>
-                        <th style="width:180px">FROM</th>
-                        <th style="width:30px"></th>
-                        <th style="width:180px">TO</th>
-                        <th style="width:170px">DAY</th>
-                    </tr>
-                    </thead>
-                    <tbody id="sched-body"></tbody>
-                </table>
-            </div>
+            <table class="sched-setup-table">
+                <thead>
+                <tr>
+                    <th style="width:40px">#</th>
+                    <th style="width:50px">ACT</th>
+                    <th style="width:180px">FROM</th>
+                    <th style="width:30px"></th>
+                    <th style="width:180px">TO</th>
+                    <th style="width:200px">DAY</th>
+                </tr>
+                </thead>
+                <tbody id="sched-body"></tbody>
+            </table>
         </div>
 
         <div class="pop-foot sched-modal-footer">
@@ -687,107 +750,229 @@ if ($_POST['dataamount']){
 </form>
 
 
-
 </body>
 <script type="text/javascript">
-    (function () {
+    function initCrewScheduler() {
         const tbody = document.getElementById('sched-body');
-        const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-        function buildOptions(max) {
+        if (!tbody) {
+            console.error('sched-body not found');
+            return;
+        }
+
+        /*
+         * 일요일 0 ~ 토요일 6
+         */
+        const days = [
+            {label: 'Sun', value: '0'},
+            {label: 'Mon', value: '1'},
+            {label: 'Tue', value: '2'},
+            {label: 'Wed', value: '3'},
+            {label: 'Thu', value: '4'},
+            {label: 'Fri', value: '5'},
+            {label: 'Sat', value: '6'}
+        ];
+
+        function buildOptions(max, step, selectedValue) {
             let html = '';
-            for (let i = 0; i <= max; i++) {
+
+            step = step || 1;
+            selectedValue = selectedValue || '00';
+
+            for (let i = 0; i <= max; i += step) {
                 const v = String(i).padStart(2, '0');
-                html += `<option value="${v}">${v}</option>`;
+                const selected = v === selectedValue ? ' selected' : '';
+                html += `<option value="${v}"${selected}>${v}</option>`;
             }
+
             return html;
         }
 
-        function timeSelect(name, max) {
+        function timeSelect(name, id, max, step, selectedValue) {
             return `
-                <select class="sched-time-select" name="${name}">
-                    ${buildOptions(max)}
-                </select>
-            `;
+            <select class="sched-time-select" name="${name}" id="${id}">
+                ${buildOptions(max, step, selectedValue)}
+            </select>
+        `;
         }
 
         function dayButtons(rowIndex) {
             return `
-                <div class="sched-days">
-                    ${days.map(day => `
-                        <button type="button"
-                                class="sched-day"
-                                data-row="${rowIndex}"
-                                data-day="${day}">
-                            ${day}
-                        </button>
-                    `).join('')}
-                </div>
-            `;
+            <div class="sched-days">
+                ${days.map(day => {
+                const inputId = `day_${rowIndex}_${day.value}`;
+
+                return `
+                        <input type="checkbox"
+                               class="sched-day-check"
+                               name="day_${rowIndex}[]"
+                               id="${inputId}"
+                               value="${day.value}">
+
+                        <label class="sched-day" for="${inputId}">
+                            ${day.label}
+                        </label>
+                    `;
+            }).join('')}
+            </div>
+        `;
         }
 
         let rowsHtml = '';
-        for (let i = 1; i <= 3; i++) {
+
+        /*
+         * 중요:
+         * PHP set_scheduler()가 for ($i = 0; $i < 3; $i++) 구조이므로
+         * HTML name도 0,1,2로 맞춰야 함
+         */
+        for (let i = 0; i < 3; i++) {
+            const displayNo = i + 1;
+            const defaultToHour = i === 0 ? '23' : '12';
+
             rowsHtml += `
-                <tr>
-                    <td><span class="sched-no-badge">${i}</span></td>
-                    <td>
-                        <input type="checkbox" class="sched-act-check" name="act_${i}">
-                    </td>
-                    <td>
-                        <div class="sched-time-group">
-                            ${timeSelect(`from_h_${i}`, 23)}
-                            <span class="sched-time-colon">:</span>
-                            ${timeSelect(`from_m_${i}`, 59)}
-                        </div>
-                    </td>
-                    <td><span class="sched-arrow">→</span></td>
-                    <td>
-                        <div class="sched-time-group">
-                            ${timeSelect(`to_h_${i}`, 23)}
-                            <span class="sched-time-colon">:</span>
-                            ${timeSelect(`to_m_${i}`, 59)}
-                        </div>
-                    </td>
-                    <td>${dayButtons(i)}</td>
-                </tr>
-            `;
+            <tr class="sched-row" data-row="${i}">
+                <td>
+                    <span class="sched-no-badge">${displayNo}</span>
+                </td>
+
+                <td>
+                    <input type="checkbox"
+                           class="sched-act-check"
+                           name="act_${i}"
+                           id="act_${i}"
+                           value="1">
+                </td>
+
+                <td>
+                    <div class="sched-time-group">
+                        ${timeSelect(`from_hour_${i}`, `from_hour_${i}`, 23, 1, '00')}
+                        <span class="sched-time-colon">:</span>
+                        ${timeSelect(`from_min_${i}`, `from_min_${i}`, 59, 10, '00')}
+                    </div>
+                </td>
+
+                <td>
+                    <span class="sched-arrow">→</span>
+                </td>
+
+                <td>
+                    <div class="sched-time-group">
+                        ${timeSelect(`to_hour_${i}`, `to_hour_${i}`, 23, 1, defaultToHour)}
+                        <span class="sched-time-colon">:</span>
+                        ${timeSelect(`to_min_${i}`, `to_min_${i}`, 59, 10, '00')}
+                    </div>
+                </td>
+
+                <td>
+                    ${dayButtons(i)}
+                </td>
+            </tr>
+        `;
         }
         tbody.innerHTML = rowsHtml;
-
-        document.addEventListener('click', function (e) {
-            if (e.target.classList.contains('sched-day')) {
-                e.target.classList.toggle('active');
-            }
-        });
-    })();
+    }
 
     function submit_crewscheduler() {
-        const rows = [];
-        const tbodyRows = document.querySelectorAll('#sched-body tr');
+        var form = document.getElementById('crewscheduler');
+        var rows = [];
 
-        tbodyRows.forEach((tr, idx) => {
-            const rowNo = idx + 1;
-            const active = tr.querySelector(`input[name="act_${rowNo}"]`).checked;
-            const from_h = tr.querySelector(`select[name="from_h_${rowNo}"]`).value;
-            const from_m = tr.querySelector(`select[name="from_m_${rowNo}"]`).value;
-            const to_h = tr.querySelector(`select[name="to_h_${rowNo}"]`).value;
-            const to_m = tr.querySelector(`select[name="to_m_${rowNo}"]`).value;
+        /*
+         * 이전 submit 시 만들어진 hidden day 제거
+         */
+        var oldHiddenDays = form.querySelectorAll('.sched-day-post');
+        for (var x = 0; x < oldHiddenDays.length; x++) {
+            oldHiddenDays[x].remove();
+        }
 
-            const selectedDays = Array.from(tr.querySelectorAll('.sched-day.active'))
-                .map(btn => btn.dataset.day);
+        for (var i = 0; i < 3; i++) {
+            var actEl = document.querySelector('input[name="act_' + i + '"]');
+
+            var fromHourEl = document.getElementById('from_hour_' + i);
+            var fromMinEl  = document.getElementById('from_min_' + i);
+            var toHourEl   = document.getElementById('to_hour_' + i);
+            var toMinEl    = document.getElementById('to_min_' + i);
+
+            if (!fromHourEl || !fromMinEl || !toHourEl || !toMinEl) {
+                console.error('scheduler input missing row:', i);
+                continue;
+            }
+
+            var days = [];
+
+            /*
+             * 1순위: 정상 checkbox 방식
+             * name="day_0[]"
+             */
+            var dayEls = document.querySelectorAll('input[name="day_' + i + '[]"]:checked');
+
+            for (var d = 0; d < dayEls.length; d++) {
+                days.push(dayEls[d].value);
+            }
+
+            /*
+             * 2순위: 혹시 아직 예전 방식 name="day_0" checkbox가 남아 있는 경우
+             */
+            var oldDayEls = document.querySelectorAll('input[name="day_' + i + '"]:checked');
+
+            for (var od = 0; od < oldDayEls.length; od++) {
+                if (days.indexOf(oldDayEls[od].value) === -1) {
+                    days.push(oldDayEls[od].value);
+                }
+            }
+
+            /*
+             * 3순위: 버튼 active 방식이 남아 있는 경우
+             */
+            var activeDayBtns = document.querySelectorAll('.sched-day[data-row="' + i + '"].active');
+
+            for (var b = 0; b < activeDayBtns.length; b++) {
+                var dayValue = activeDayBtns[b].getAttribute('data-day');
+
+                if (dayValue && days.indexOf(dayValue) === -1) {
+                    days.push(dayValue);
+                }
+            }
+
+            /*
+             * 기존 day_0, day_0[] input은 모두 disabled 처리
+             * 이유:
+             * name="day_0"이 하나라도 남아 있으면 PHP에서 마지막 값만 받을 수 있음
+             */
+            var oldInputs = form.querySelectorAll('input[name="day_' + i + '"], input[name="day_' + i + '[]"]');
+
+            for (var r = 0; r < oldInputs.length; r++) {
+                oldInputs[r].disabled = true;
+            }
+
+            /*
+             * PHP에서 배열로 받도록 hidden input 재생성
+             * 핵심: name="day_0[]"
+             */
+            for (var h = 0; h < days.length; h++) {
+                var hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.className = 'sched-day-post';
+                hidden.name = 'day_' + i + '[]';
+                hidden.value = days[h];
+
+                form.appendChild(hidden);
+            }
 
             rows.push({
-                row: rowNo,
-                active: active ? 1 : 0,
-                from: `${from_h}:${from_m}`,
-                to: `${to_h}:${to_m}`,
-                days: selectedDays
+                active: actEl && actEl.checked ? 1 : 0,
+                from_hour: fromHourEl.value,
+                from_min: fromMinEl.value,
+                to_hour: toHourEl.value,
+                to_min: toMinEl.value,
+                days: days
             });
-        });
+        }
 
         document.getElementById('scheduleJsonHidden').value = JSON.stringify(rows);
-        document.getElementById('crewscheduler').submit();
+
+        console.log('schedule_json:', document.getElementById('scheduleJsonHidden').value);
+
+        form.submit();
     }
     function confirm_exportCsv() {
         window.location.href = "crew_account.php?export=csv";
