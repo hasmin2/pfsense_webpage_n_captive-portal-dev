@@ -12,31 +12,33 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
  * - syncLoginToQuota: copy the login username into the quota field automatically
  */
 $uiConfig = [
-    'termsEnabled'     => true,
-	'termsRequired'    => true
+    'termsEnabled'  => true,
+'termsRequired' => true
 ];
 
 /* ---------------------------
 * Common helpers
 * --------------------------- */
 if (!function_exists('h')) {
-	function h($value): string
-	{
-		return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-	}
+function h($value): string
+{
+return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
+}
+
 if (!function_exists('req_value')) {
 function req_value(string $key, string $default = ''): string
-	{
-	if (isset($_POST[$key])) {
-		return trim((string)$_POST[$key]);
-	}
-	if (isset($_GET[$key])) {
-		return trim((string)$_GET[$key]);
-	}
-	return $default;
+{
+if (isset($_POST[$key])) {
+return trim((string)$_POST[$key]);
+}
+if (isset($_GET[$key])) {
+return trim((string)$_GET[$key]);
+}
+return $default;
 }
 }
+
 if (!function_exists('flash_get_once')) {
 function flash_get_once(): array
 {
@@ -48,6 +50,7 @@ return $data;
 return [];
 }
 }
+
 if (!function_exists('pick_value')) {
 function pick_value(array $flash, string $key, string $default = ''): string
 {
@@ -76,6 +79,11 @@ $quotaRemain    = pick_value($flash, 'quota_remaining');
 $loginUserValue = req_value('auth_user');
 $quotaUserValue = $quotaUser !== '' ? $quotaUser : req_value('quota_user');
 
+$accountTypeValue = strtolower(pick_value($flash, 'account_type', req_value('account_type', 'normal')));
+if (!in_array($accountTypeValue, ['normal', 'prepaid'], true)) {
+$accountTypeValue = 'normal';
+}
+
 $showQuotaResult = (
 $quotaResultMsg !== '' ||
 $quotaUser !== '' ||
@@ -84,7 +92,6 @@ $quotaRemain !== ''
 );
 
 ?>
-
 
 <html lang="en">
 <head>
@@ -377,6 +384,50 @@ $quotaRemain !== ''
 			color:var(--text);
 		}
 
+		.username-account-row,
+		.quota-account-row{
+			display:grid;
+			grid-template-columns:minmax(0, 1fr) 170px;
+			gap:12px;
+			align-items:end;
+			margin-bottom:14px;
+		}
+
+		.username-account-row .field,
+		.quota-account-row .field{
+			margin-bottom:0;
+		}
+
+		.account-type-field{
+			margin-bottom:0;
+		}
+
+		.account-type-select{
+			width:100%;
+			height:50px;
+			border-radius:14px;
+			border:1px solid var(--line-strong);
+			background:rgba(255,255,255,0.06);
+			color:var(--text);
+			padding:0 14px;
+			font-size:15px;
+			font-weight:700;
+			outline:none;
+			cursor:pointer;
+			transition:border-color .2s ease, background .2s ease, box-shadow .2s ease;
+		}
+
+		.account-type-select:focus{
+			border-color:rgba(94,169,255,0.85);
+			background:rgba(255,255,255,0.09);
+			box-shadow:0 0 0 4px rgba(94,169,255,0.15);
+		}
+
+		.account-type-select option{
+			color:#111827;
+			background:#ffffff;
+		}
+
 		.terms-line{
 			display:flex;
 			align-items:flex-start;
@@ -495,59 +546,12 @@ $quotaRemain !== ''
 			word-break:break-word;
 		}
 
-		@media (max-width: 640px){
-			.shell{
-				padding:18px 14px 14px;
-			}
-
-			.top-logo-area{
-				margin-bottom:18px;
-			}
-
-			.top-logo-wrap{
-				width:140px;
-				height:140px;
-				border-radius:20px;
-			}
-			.panel{
-				padding:16px;
-			}
-
-			.card{
-				padding:18px 16px;
-			}
-
-			.card-head{
-				flex-direction:column;
-				align-items:stretch;
-			}
-
-			.card-tools .mini-btn{
-				width:100%;
-			}
-
-			.quota-grid{
-				grid-template-columns:1fr;
-			}
-
-			.page-title{
-				font-size:24px;
-			}
+		.status-lines {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			margin-top: 8px;
 		}
-
-		@media (min-width: 641px) and (max-width: 980px){
-			.top-logo-wrap{
-				width:180px;
-				height:180px;
-				border-radius:24px;
-			}
-		}
-		 .status-lines {
-			 display: flex;
-			 flex-direction: column;
-			 gap: 8px;
-			 margin-top: 8px;
-		 }
 
 		.status-line {
 			display: flex;
@@ -685,6 +689,7 @@ $quotaRemain !== ''
 			opacity: 1;
 			visibility: visible;
 		}
+
 		.status-chip-link {
 			display: inline-flex;
 			align-items: center;
@@ -712,9 +717,65 @@ $quotaRemain !== ''
 		.status-chip-link:visited {
 			color: #26b765;
 		}
+
 		@media (max-width: 768px) {
 			.speed-slider-wrap {
 				grid-template-columns: repeat(2, minmax(0, 1fr));
+			}
+		}
+
+		@media (max-width: 640px){
+			.shell{
+				padding:18px 14px 14px;
+			}
+
+			.username-account-row,
+			.quota-account-row{
+				grid-template-columns:1fr;
+				gap:14px;
+			}
+
+			.top-logo-area{
+				margin-bottom:18px;
+			}
+
+			.top-logo-wrap{
+				width:140px;
+				height:140px;
+				border-radius:20px;
+			}
+
+			.panel{
+				padding:16px;
+			}
+
+			.card{
+				padding:18px 16px;
+			}
+
+			.card-head{
+				flex-direction:column;
+				align-items:stretch;
+			}
+
+			.card-tools .mini-btn{
+				width:100%;
+			}
+
+			.quota-grid{
+				grid-template-columns:1fr;
+			}
+
+			.page-title{
+				font-size:24px;
+			}
+		}
+
+		@media (min-width: 641px) and (max-width: 980px){
+			.top-logo-wrap{
+				width:180px;
+				height:180px;
+				border-radius:24px;
 			}
 		}
 	</style>
@@ -734,6 +795,8 @@ $quotaRemain !== ''
 			syncLoginToQuota: <?= !empty($uiConfig['syncLoginToQuota']) ? 'true' : 'false' ?>
 	};
 
+		var accountTypeDefault = <?= json_encode($accountTypeValue, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;
+
 		function $(id) {
 			return document.getElementById(id);
 		}
@@ -741,6 +804,7 @@ $quotaRemain !== ''
 		function setBackground() {
 			var page = $('page');
 			if (!page) return;
+
 			page.style.backgroundImage =
 					'linear-gradient(135deg, rgba(4,10,20,0.72), rgba(9,18,32,0.55)), url(' +
 					window.location.origin + config.backgroundImagePath + ')';
@@ -806,6 +870,89 @@ $quotaRemain !== ''
 			});
 		}
 
+		function closestByClass(el, className) {
+			while (el && el !== document) {
+				if (el.classList && el.classList.contains(className)) {
+					return el;
+				}
+				el = el.parentNode;
+			}
+			return null;
+		}
+
+		function buildAccountTypeField(selectId) {
+			var selected = accountTypeDefault === 'prepaid' ? 'prepaid' : 'normal';
+
+			var field = document.createElement('div');
+			field.className = 'field account-type-field';
+
+			var label = document.createElement('label');
+			label.setAttribute('for', selectId);
+			label.textContent = 'Account Type';
+
+			var select = document.createElement('select');
+			select.className = 'account-type-select';
+			select.name = 'account_type';
+			select.id = selectId;
+
+			var normal = document.createElement('option');
+			normal.value = 'normal';
+			normal.textContent = 'Normal';
+
+			var prepaid = document.createElement('option');
+			prepaid.value = 'prepaid';
+			prepaid.textContent = 'Prepaid';
+
+			select.appendChild(normal);
+			select.appendChild(prepaid);
+			select.value = selected;
+
+			field.appendChild(label);
+			field.appendChild(select);
+
+			return field;
+		}
+
+		function moveAccountTypeNextToInput(inputId, selectId, rowClass, fieldClass) {
+			var input = $(inputId);
+			if (!input) return;
+
+			if ($(selectId)) return;
+
+			var inputField = closestByClass(input, 'field');
+			if (!inputField || !inputField.parentNode) return;
+
+			if (closestByClass(inputField, rowClass)) return;
+
+			var row = document.createElement('div');
+			row.className = rowClass;
+
+			inputField.parentNode.insertBefore(row, inputField);
+
+			if (fieldClass) {
+				inputField.classList.add(fieldClass);
+			}
+
+			row.appendChild(inputField);
+			row.appendChild(buildAccountTypeField(selectId));
+		}
+
+		function moveAccountTypesNextToInputs() {
+			moveAccountTypeNextToInput(
+					'login_user',
+					'login_account_type',
+					'username-account-row',
+					'username-field'
+			);
+
+			moveAccountTypeNextToInput(
+					'quota_user',
+					'quota_account_type',
+					'quota-account-row',
+					'quota-field'
+			);
+		}
+
 		function bindSubmitLoading() {
 			var loginForm = document.forms['login_form'];
 			var quotaForm = document.forms['quota_form'];
@@ -843,6 +990,7 @@ $quotaRemain !== ''
 			bindPasswordToggle();
 			bindQuotaButton();
 			bindUsernameSync();
+			moveAccountTypesNextToInputs();
 			bindSubmitLoading();
 			hideEmptyStateButton();
 		});

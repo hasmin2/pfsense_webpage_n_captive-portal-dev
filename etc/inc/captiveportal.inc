@@ -2596,12 +2596,8 @@ function portal_reply_page($redirurl, $type = null, $title = null, $clientmac = 
             'portalInfo'      => "",
             'loginUserValue'  => $username,
             'uiConfig'        => [],
-            'quotaNotice'     => [],
-            'quotaUserValue'  => [],
             'showQuotaResult' => false,
             'subject'  => "Login Failed!",
-            'quotaUsed'       => $currentquota,
-            'quotaAllocated'     => $maxquota,
         ]), $htmltext);
         echo $htmltext;
     }
@@ -2637,12 +2633,8 @@ function portal_reply_page($redirurl, $type = null, $title = null, $clientmac = 
                 'portalInfo'      => $result,
                 'loginUserValue'  => $username,
                 'uiConfig'        => [],
-                'quotaNotice'     => [],
-                'quotaUserValue'  => [],
                 'showQuotaResult' => false,
                 'subject'  => $title,
-                'quotaUsed'       => $currentquota,
-                'quotaAllocated'     => $maxquota,
         ]), $htmltext);
 
         echo $htmltext;
@@ -2680,8 +2672,6 @@ function portal_reply_page($redirurl, $type = null, $title = null, $clientmac = 
                                         'uiConfig'        => [],
                                         'showQuotaResult' => false,
                                         'subject'         => "Account Update",
-                                        'quotaUsed'       => $currentquota,
-                                        'quotaAllocated'    => $maxquota,
                                 ]), $htmltext);
                         session_write_close();
                         echo $htmltext;
@@ -2700,8 +2690,6 @@ function portal_reply_page($redirurl, $type = null, $title = null, $clientmac = 
                             'uiConfig'        => [],
                             'showQuotaResult' => false,
                             'subject'  => "WIFI Portal Shutdown!",
-                            'quotaUsed'       => $currentquota,
-                            'quotaAllocated'     => $maxquota,
                         ]), $htmltext);
                         captiveportal_disconnect_client($sessionid);
                         echo $htmltext;
@@ -2719,18 +2707,20 @@ function portal_reply_page($redirurl, $type = null, $title = null, $clientmac = 
                                     'portalInfo'      => "You are currently entered suspend schedule",
                                     'loginUserValue'  => $username,
                                     'uiConfig'        => [],
-                                    'quotaNotice'     => '',
-                                    'quotaUserValue'  => '',
                                     'showQuotaResult' => false,
                                     'subject'  => "User Suspended",
-                                    'quotaUsed'       => $currentquota,
-                                    'quotaAllocated'     => $maxquota,
                                 ]), $htmltext);
                                 echo $htmltext;
                             }
                             else{
                                 if($usernickname==""){
-                                    $loginname = $username;
+                                    if (strpos($username, 'crewpay-') === 0) {
+                                        $loginname = substr($username, strlen('crewpay-'));
+                                        $title = 'You are currently logged in with a Prepaid ID.';
+                                    } else {
+
+                                        $loginname = $username;
+                                    }
                                 }else{
                                     $loginname = $usernickname;
                                 }
@@ -2754,12 +2744,9 @@ function portal_reply_page($redirurl, $type = null, $title = null, $clientmac = 
                                 'portalInfo'      => "You have used up all of your data quota.",
                                 'loginUserValue'  => $username,
                                 'uiConfig'        => [],
-                                'quotaNotice'     => '',
-                                'quotaUserValue'  => '',
+
                                 'showQuotaResult' => false,
                                 'subject'  => "Quota Reached",
-                                'quotaUsed'       => $currentquota,
-                                'quotaAllocated'     => $maxquota,
                             ]), $htmltext);
                             echo $htmltext;
                             exit;
@@ -2774,12 +2761,9 @@ function portal_reply_page($redirurl, $type = null, $title = null, $clientmac = 
                     'portalInfo'      => "",
                     'loginUserValue'  => $username,
                     'uiConfig'        => [],
-                    'quotaNotice'     => '',
-                    'quotaUserValue'  => '',
+
                     'showQuotaResult' => false,
                     'subject'  => "Antenna Offline",
-                    'quotaUsed'       => $currentquota,
-                    'quotaAllocated'     => $maxquota,
                 ]), $htmltext);
                 captiveportal_disconnect_client($sessionid, "No-Gateway");
                 echo $htmltext;
@@ -2814,12 +2798,9 @@ function portal_reply_page($redirurl, $type = null, $title = null, $clientmac = 
             'portalInfo'      => $info,
             'loginUserValue'  => $username,
             'uiConfig'        => [],
-            'quotaNotice'     => '',
-            'quotaUserValue'  => '',
+
             'showQuotaResult' => false,
             'subject'  => $subject,
-            'quotaUsed'       => $currentquota,
-            'quotaAllocated'     => $maxquota,
         ]), $htmltext);
 
         echo $htmltext;
@@ -2874,11 +2855,7 @@ function portal_reply_page($redirurl, $type = null, $title = null, $clientmac = 
                 'portalInfo'      => $info,
                 'loginUserValue'  => $username,
                 'uiConfig'        => [],
-                'quotaNotice'     => '',
-                'quotaUserValue'  => '',
                 'showQuotaResult' => false,
-                'quotaUsed'       => $currentquota,
-                'quotaAllocated'     => $maxquota,
         ]), $htmltext);
         echo $htmltext;
 

@@ -45,7 +45,16 @@ function cp_flash_get(): ?array
 	unset($_SESSION['cp_flash']);
 	return $d;
 }
-
+if($_POST['auth_user'] && $_POST['login_account_type'] === "prepaid"){
+	$auth_user='crewpay-'.$_POST['auth_user'];
+}
+else{
+	$auth_user = $_POST['auth_user'];
+}
+if($_POST['quota_user'] && $_POST['quota_account_type'] === "prepaid"){
+	$quota_user='crewpay-'.$_POST['quota_user'];
+	$quota_user = $_POST['quota_user'];
+}
 function cp_redirect_self(array $query = []): void
 {
 	global $cpzone;
@@ -303,7 +312,7 @@ if (!empty($_POST['commit_change_pw'])) {
 		'msg' => 'Changed PW',
 		'mac' => $clientmac,
 		'ip' => $clientip,
-		'username' => $_POST['auth_user'],
+		'username' => $auth_user,
 		'password' => $_POST['new_password'],
 	]);
 	cp_redirect_self(['zone' => $cpzone]);
@@ -314,7 +323,7 @@ if (!empty($_POST['check_quota'])) {
 		'redirurl' => $loginurl,
 		'type' => 'check_quota',
 		'msg' => 'Quota details',
-		'username' => $_POST['quota_user'],
+		'username' => $quota_user,
 	]);
 	cp_redirect_self(['zone' => $cpzone]);
 }
@@ -435,7 +444,7 @@ if (!empty($config['voucher'][$cpzone]['enable']) && ((!empty($_POST['accept']) 
 				'ip' => $clientip,
 			]);
 		}
-		//cp_redirect_self(['zone' => $cpzone]);
+		cp_redirect_self(['zone' => $cpzone]);
 	} elseif ($timecredit == -1) {
 		captiveportal_logportalauth($voucher, $clientmac, $clientip, "FAILURE", "voucher expired");
 		$m = !empty($config['voucher'][$cpzone]['descrmsgexpired']) ? $config['voucher'][$cpzone]['descrmsgexpired'] : $errormsg;
@@ -446,7 +455,7 @@ if (!empty($config['voucher'][$cpzone]['enable']) && ((!empty($_POST['accept']) 
 			'mac' => $clientmac,
 			'ip' => $clientip,
 		]);
-		//cp_redirect_self(['zone' => $cpzone]);
+		cp_redirect_self(['zone' => $cpzone]);
 	} else {
 		captiveportal_logportalauth($voucher, $clientmac, $clientip, "FAILURE");
 		$m = !empty($config['voucher'][$cpzone]['descrmsgnoaccess']) ? $config['voucher'][$cpzone]['descrmsgnoaccess'] : $errormsg;
@@ -475,7 +484,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || (($cpcfg['auth_method'] ?? '') === 
 		$passwd = ($_POST['auth_pass2'] ?? '');
 		$context = 'second';
 	} else {
-		$user = trim($_POST['auth_user'] ?? '');
+		$user = trim($auth_user ?? '');
 		$passwd = ($_POST['auth_pass'] ?? '');
 		$context = 'first';
 	}
@@ -514,7 +523,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || (($cpcfg['auth_method'] ?? '') === 
 		cp_flash_set([
 			'redirurl' => $loginurl,
 			'type' => 'connected',
-			'msg' => (trim($_POST['auth_user'] ?? $user) . " online"),
+			'msg' => (trim($user) . " online"),
 			'mac' => $clientmac,
 			'ip' => $clientip,
 
