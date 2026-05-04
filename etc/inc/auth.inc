@@ -2399,6 +2399,8 @@ EOD;
             @symlink("/var/etc/pam_ldap.conf", "/usr/local/etc/nss_ldap.conf");
         }
     }
+    $content = $header . $nsswitch;
+    $nsswitch = str_replace(["\r\n", "\r"], "\n", $content);
 
     @file_put_contents("/etc/pam.d/sshd", $header . $pam_sshd);
     @file_put_contents("/etc/pam.d/system", $header . $pam_system);

@@ -227,8 +227,8 @@
             "command": "/usr/local/bin/php /usr/local/cron/manual_routing_timeperiod_check.php > /dev/null"
         },
         {
-            "minute": "*",
-            "hour": "*",
+            "minute": "0",
+            "hour": "0",
             "mday": "1",
             "month": "*",
             "wday": "*",

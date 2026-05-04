@@ -38,8 +38,8 @@ foreach ($radiusUsers as $idx => $userEntry) {
 // 변경이 있을 때만 반영 작업 수행
 if ($changed) {
     freeradius_users_resync();
-    captiveportal_syslog("Reset half monthly datausage Wifi user (updated)");
+    captiveportal_syslog("Reset PREPAID datausage / allocation (Updated)");
     write_config("Reset half monthly datausage Wifi user");
 } else {
-    captiveportal_syslog("Reset half monthly datausage Wifi user (no changes)");
+    captiveportal_syslog("Reset PREPAID datausage / allocation (no changes)");
 }
