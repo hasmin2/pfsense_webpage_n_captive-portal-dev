@@ -18,7 +18,7 @@ foreach ($radiusUsers as $idx => $userEntry) {
         continue;
     }
     $username = trim((string)($userEntry['varusersusername'] ?? ''));
-    if (strpos($username, "#") === 0 || $username ==='synersat') {
+    if (strpos($username, "crewpay-") !== 0) {
         continue;
     }
 
@@ -28,16 +28,10 @@ foreach ($radiusUsers as $idx => $userEntry) {
 
     // 조건 매칭
     if ($pointOfTime === 'monthly') {
-        // 이미 원하는 값이면 불필요한 update를 피함
-        $resetQuota = strtolower(trim((string)($userEntry['varusersresetquota'] ?? '')));
-        $modified   = strtolower(trim((string)($userEntry['varusersmodified'] ?? '')));
-
-        if ($resetQuota !== 'true' || $modified !== 'update') {
-            $config['installedpackages']['freeradius']['config'][$idx]['varusersresetquota'] = 'true';
-            $config['installedpackages']['freeradius']['config'][$idx]['varusersmodified']  = 'update';
-            $config['installedpackages']['freeradius']['config'][$idx]['varusersmaxtotaloctets']  = '0';
-            $changed = true;
-        }
+        $config['installedpackages']['freeradius']['config'][$idx]['varusersresetquota'] = 'true';
+        $config['installedpackages']['freeradius']['config'][$idx]['varusersmodified']  = 'update';
+        $config['installedpackages']['freeradius']['config'][$idx]['varusersmaxtotaloctets']  = '0';
+        $changed = true;
     }
 }
 

@@ -53,6 +53,8 @@ else{
 }
 if($_POST['quota_user'] && $_POST['quota_account_type'] === "prepaid"){
 	$quota_user='crewpay-'.$_POST['quota_user'];
+}
+else{
 	$quota_user = $_POST['quota_user'];
 }
 function cp_redirect_self(array $query = []): void
